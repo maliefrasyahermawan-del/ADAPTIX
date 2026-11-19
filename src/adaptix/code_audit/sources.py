@@ -103,14 +103,94 @@ def unpack(raw: bytes) -> dict:
     return {'files': files, 'excluded': excluded, 'sha256': hashlib.sha256(raw).hexdigest()}
 
 
-def write_bundle(run_dir: Path, raw: bytes, name: str) -> dict:
-    """Sanitize an upload and persist only the sanitized bundle (never the ZIP)."""
-    bundle = unpack(raw)
+def _allowed_roots():
+    raw = os.getenv('ADAPTIX_CODE_AUDIT_ROOTS', '')
+    roots = []
+    for part in raw.split(os.pathsep):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            roots.append(Path(part).expanduser().resolve())
+        except OSError:
+            continue
+    return roots
+
+
+def directory_bundle(source_dir, *, name=None) -> dict:
+    """Read a local source folder into the same sanitized bundle shape as a ZIP.
+
+    The folder is read-only: nothing is written, imported, or executed. Entries
+    that a ZIP would reject (symlinks, private directories, binaries) are skipped
+    and counted, while the same per-file/total/count limits are enforced. Set
+    ``ADAPTIX_CODE_AUDIT_ROOTS`` (os.pathsep-separated) to confine which folders
+    the dashboard may read.
+    """
+    source = Path(source_dir).expanduser().resolve()
+    if not source.is_dir():
+        raise ValueError('Folder source tidak ditemukan atau bukan direktori.')
+    roots = _allowed_roots()
+    if roots and not any(source == root or root in source.parents for root in roots):
+        raise ValueError('Folder source berada di luar ADAPTIX_CODE_AUDIT_ROOTS.')
+    files: dict[str, dict] = {}
+    total = 0
+    excluded = 0
+    for dirpath, dirnames, filenames in os.walk(source, followlinks=False):
+        dirnames[:] = sorted(part for part in dirnames if part not in PRIVATE)
+        for filename in sorted(filenames):
+            path = Path(dirpath) / filename
+            relative = path.relative_to(source)
+            if (any(part in PRIVATE for part in relative.parts)
+                    or filename.startswith('.env') or path.is_symlink()
+                    or not path.is_file()
+                    or path.suffix.lower() not in EXTENSIONS):
+                excluded += 1
+                continue
+            try:
+                data = path.read_bytes()
+            except OSError:
+                excluded += 1
+                continue
+            if len(data) > MAX_FILE:
+                raise ValueError('Maksimal 200 KB per file teks.')
+            total += len(data)
+            if total > MAX_TOTAL:
+                raise ValueError('Ukuran source maksimal 8 MB.')
+            try:
+                text = data.decode('utf-8')
+            except UnicodeError:
+                excluded += 1
+                continue
+            if '\x00' in text:
+                excluded += 1
+                continue
+            if len(files) >= MAX_FILES:
+                raise ValueError('Maksimal 300 file teks.')
+            safe = redact(text)
+            files[relative.as_posix()] = {
+                'text': safe,
+                'sha256': hashlib.sha256(safe.encode()).hexdigest(),
+                'lines': len(safe.splitlines()),
+            }
+    if not files:
+        raise ValueError('Folder tidak memiliki source teks yang dapat dianalisis.')
+    digest = hashlib.sha256()
+    for rel_name in sorted(files):
+        digest.update(rel_name.encode())
+        digest.update(files[rel_name]['sha256'].encode())
+    return {'files': files, 'excluded': excluded, 'sha256': digest.hexdigest(),
+            'name': name or source.name, 'source_path': str(source)}
+
+
+def _persist_bundle(run_dir: Path, bundle: dict, name: str, *, kind: str,
+                    source_path: str = '') -> dict:
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     path = run_dir / 'code-bundle.json'
     payload = {
         'name': name,
+        'source_kind': kind,
+        'source_path': source_path,
         'sha256': bundle['sha256'],
         'files': bundle['files'],
         'excluded': bundle['excluded'],
@@ -124,6 +204,19 @@ def write_bundle(run_dir: Path, raw: bytes, name: str) -> dict:
     except OSError:
         pass
     return bundle
+
+
+def write_bundle(run_dir: Path, raw: bytes, name: str) -> dict:
+    """Sanitize an upload and persist only the sanitized bundle (never the ZIP)."""
+    return _persist_bundle(run_dir, unpack(raw), name, kind='zip')
+
+
+def write_directory_bundle(run_dir: Path, source_dir, *, name=None) -> dict:
+    """Sanitize a local folder and persist only the text bundle."""
+    source = Path(source_dir).expanduser().resolve()
+    bundle = directory_bundle(source, name=name)
+    return _persist_bundle(run_dir, bundle, bundle['name'], kind='folder',
+                           source_path=str(source))
 
 
 def load_bundle(run_dir: Path) -> dict:

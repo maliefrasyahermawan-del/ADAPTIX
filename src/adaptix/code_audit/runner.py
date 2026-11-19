@@ -9,7 +9,7 @@ import threading
 import time
 from pathlib import Path
 
-from src.adaptix.code_audit.sources import write_bundle
+from src.adaptix.code_audit.sources import write_bundle, write_directory_bundle
 from src.adaptix.config import ROOT
 
 ANSI = re.compile(r'\x1b\[[0-9;?]*[ -/]*[@-~]')
@@ -77,8 +77,8 @@ def _apply_report(view, run_dir):
     view.external = external
 
 
-def start_code(runner, instruction, archive, filename, model, budgets):
-    """Validate the upload, persist only its sanitized bundle, and start the worker."""
+def start_code(runner, instruction, archive, filename, model, budgets, *, source_path=None):
+    """Validate the source (ZIP or local folder), persist its sanitized bundle, start the worker."""
     run_id = time.strftime('code-%H%M%S')
     base = _run_dir(run_id)
     suffix = 1
@@ -88,7 +88,15 @@ def start_code(runner, instruction, archive, filename, model, budgets):
         suffix += 1
     base.mkdir(parents=True, exist_ok=True)
     try:
-        bundle = write_bundle(base, archive, filename)
+        if source_path:
+            bundle = write_directory_bundle(base, source_path)
+            source_kind = 'folder'
+            display = bundle.get('source_path') or str(source_path)
+            filename = bundle.get('name') or os.path.basename(str(source_path))
+        else:
+            bundle = write_bundle(base, archive, filename)
+            source_kind = 'zip'
+            display = filename
     except Exception:
         import shutil
         shutil.rmtree(base, ignore_errors=True)
@@ -96,7 +104,8 @@ def start_code(runner, instruction, archive, filename, model, budgets):
     (base / 'logs').mkdir(exist_ok=True)
 
     request = {
-        'engine': 'code', 'audit_kind': 'code', 'source_name': filename,
+        'engine': 'code', 'audit_kind': 'code', 'source_kind': source_kind,
+        'source_name': filename, 'source_path': str(bundle.get('source_path') or ''),
         'source_sha256': bundle['sha256'], 'files': len(bundle['files']),
         'excluded': bundle['excluded'], 'instruction': instruction,
         'model': model, 'budgets': budgets, 'created': time.time(),
@@ -111,7 +120,7 @@ def start_code(runner, instruction, archive, filename, model, budgets):
     view.run_id = run_id
     view.engine = 'code'
     view.objective = instruction
-    view.target = [filename]
+    view.target = [display]
     view.model = model
     view.status = 'starting'
     view.stop_reason = ''
@@ -123,9 +132,11 @@ def start_code(runner, instruction, archive, filename, model, budgets):
     view.iteration = 0
     view.max_iterations = int(budgets.get('max_iterations') or 8)
     view.external = {'engine': 'code-audit', 'source': {
-        'name': filename, 'sha256': bundle['sha256'], 'files': len(bundle['files']),
+        'name': filename, 'kind': source_kind,
+        'path': bundle.get('source_path') or '',
+        'sha256': bundle['sha256'], 'files': len(bundle['files']),
         'excluded': bundle['excluded']}, 'activity': []}
-    view.append(f'source: {filename} ({len(bundle["files"])} file teks, '
+    view.append(f'source: {display} · {source_kind} ({len(bundle["files"])} file teks, '
                 f'{bundle["excluded"]} dikecualikan)')
     view.append(f'objective: {instruction[:160]}')
 

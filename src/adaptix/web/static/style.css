@@ -417,6 +417,9 @@ svg { display: block; }
 .opencode-options input[type=text] { border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px; font-size: 13px; min-width: 190px; }
 .opencode-options select { border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px; font-size: 13px; min-width: 265px; background: #fff; }
 .code-note { flex-basis: 100%; font-size: 11.5px; color: var(--text-dim); line-height: 1.5; max-width: 620px; }
+.code-source-choice { display: flex; align-items: center; gap: 12px; font-size: 11.5px; color: var(--text-dim); }
+.code-source-choice .check-label { flex-direction: row; align-items: center; gap: 5px; }
+#b-code-folder-row input { min-width: 360px; }
 #code-options input[type=file] { font-size: 12.5px; max-width: 300px; }
 #code-options input[type=text] { border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px; font-size: 13px; width: 90px; }
 .terminal-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }

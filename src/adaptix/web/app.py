@@ -941,14 +941,18 @@ def create_app() -> Flask:
         if runner.running:
             return jsonify({'error': 'a run is already active'}), 409
         upload = request.files.get('file')
-        if upload is None or not upload.filename:
-            return jsonify({'error': 'file ZIP source wajib diunggah'}), 400
-        filename = secure_filename(upload.filename)
-        if not filename.lower().endswith('.zip'):
-            return jsonify({'error': 'hanya arsip .zip yang diterima'}), 400
-        raw = upload.read(4_500_001)
-        if len(raw) > 4_500_000:
-            return jsonify({'error': 'ZIP maksimal 4 MB'}), 400
+        source_path = str(request.form.get('source_path') or '').strip()
+        archive = None
+        filename = ''
+        if upload is not None and upload.filename:
+            filename = secure_filename(upload.filename)
+            if not filename.lower().endswith('.zip'):
+                return jsonify({'error': 'hanya arsip .zip yang diterima'}), 400
+            archive = upload.read(4_500_001)
+            if len(archive) > 4_500_000:
+                return jsonify({'error': 'ZIP maksimal 4 MB'}), 400
+        elif not source_path:
+            return jsonify({'error': 'unggah file ZIP atau isi path folder source'}), 400
         instruction = str(request.form.get('instruction') or '').strip()
         if not instruction:
             return jsonify({'error': 'tuliskan tujuan audit kode'}), 400
@@ -968,7 +972,11 @@ def create_app() -> Flask:
             'max_iterations': _budget('max_iterations', 8, 1, 30),
         }
         try:
-            run_id = start_code(runner, instruction, raw, filename, model, budgets)
+            if source_path:
+                run_id = start_code(runner, instruction, None, os.path.basename(source_path),
+                                    model, budgets, source_path=source_path)
+            else:
+                run_id = start_code(runner, instruction, archive, filename, model, budgets)
         except ValueError as exc:
             return jsonify({'error': str(exc)}), 400
         runner.engine = 'code'

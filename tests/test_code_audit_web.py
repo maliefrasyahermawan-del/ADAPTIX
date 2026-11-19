@@ -84,3 +84,44 @@ def test_code_snapshot_rebuilds_findings_and_terminals(tmp_path):
     assert view.details[0]['title'] == 'SQL injection'
     assert view.details[0]['class'] == 'code'
     assert view.external['source']['name'] == 'app.zip'
+
+
+def test_folder_source_starts_code_engine(monkeypatch, tmp_path):
+    monkeypatch.setattr(webapp, 'runner', webapp.Runner(webapp._default_view()))
+    client = webapp.create_app().test_client()
+    source = tmp_path / 'project'
+    source.mkdir()
+    (source / 'app.py').write_text('print(1)\n', encoding='utf-8')
+    calls = {}
+
+    def fake_start(runner, instruction, archive, filename, model, budgets, *, source_path=None):
+        calls.update(archive=archive, filename=filename, source_path=source_path,
+                     instruction=instruction, budgets=budgets)
+        runner.view.engine = 'code'
+        runner.view.run_id = 'code-fake'
+        runner.view.status = 'starting'
+        runner.view.target = [str(source)]
+        runner.view.model = model
+        runner.view.details = []
+        return 'code-fake'
+
+    monkeypatch.setattr(webapp, 'start_code', fake_start)
+    response = client.post('/api/audit/code', data={
+        'source_path': str(source),
+        'instruction': 'Audit folder',
+        'model': 'deepseek/deepseek-chat',
+    }, content_type='multipart/form-data')
+    assert response.status_code == 200
+    assert response.get_json()['run_id'] == 'code-fake'
+    assert calls['source_path'] == str(source)
+    assert calls['archive'] is None
+    assert calls['filename'] == 'project'
+
+
+def test_requires_zip_or_folder(monkeypatch):
+    monkeypatch.setattr(webapp, 'runner', webapp.Runner(webapp._default_view()))
+    client = webapp.create_app().test_client()
+    response = client.post('/api/audit/code', data={
+        'instruction': 'Audit',
+    }, content_type='multipart/form-data')
+    assert response.status_code == 400

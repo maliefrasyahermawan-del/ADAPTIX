@@ -124,3 +124,25 @@ def test_network_and_terminal_actions_are_not_in_the_schema():
     for name in ('http_request', 'browser_observe', 'terminal', 'file'):
         with pytest.raises(Exception):
             Action.model_validate({'tool': name, 'arguments': {}})
+
+
+def test_provider_rejecting_reasoning_effort_is_retried_without_it(monkeypatch):
+    import litellm
+    import src.adaptix.code_audit.engine as engine
+    calls = []
+
+    def fake_completion(**kwargs):
+        calls.append(kwargs)
+        if 'reasoning_effort' in kwargs:
+            raise RuntimeError(
+                "openai does not support parameters: ['reasoning_effort']")
+        return {'ok': True}
+
+    monkeypatch.setattr(litellm, 'completion', fake_completion)
+    monkeypatch.setenv('ADAPTIX_REASONING_EFFORT', 'none')
+    result = engine._provider_call(
+        [{'role': 'user', 'content': 'x'}], model='openai/test/model',
+        api_base=None, api_key=None, max_tokens=10, timeout=5)
+    assert result == {'ok': True}
+    assert len(calls) == 2
+    assert 'reasoning_effort' not in calls[1]

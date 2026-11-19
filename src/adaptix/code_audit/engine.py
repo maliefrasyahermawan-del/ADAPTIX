@@ -133,7 +133,16 @@ def _provider_call(messages, *, model, api_base, api_key, max_tokens, timeout, c
     effort = os.getenv('ADAPTIX_REASONING_EFFORT')
     if effort:
         kwargs['reasoning_effort'] = effort
-    return litellm.completion(**kwargs)
+    try:
+        return litellm.completion(**kwargs)
+    except Exception as exc:
+        # Some OpenAI-compatible gateways reject the whole request when it carries
+        # reasoning_effort. It is an optimisation, never a requirement, so drop it
+        # once and retry instead of ending the audit as provider_unavailable.
+        if 'reasoning_effort' in kwargs and 'reasoning_effort' in str(exc).lower():
+            kwargs.pop('reasoning_effort', None)
+            return litellm.completion(**kwargs)
+        raise
 
 
 def _usage(response):

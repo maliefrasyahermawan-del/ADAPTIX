@@ -75,13 +75,27 @@ function syncEngine() {
   $('code-options').classList.toggle('hidden', !code);
   $('full-offensive-panel').classList.toggle('hidden', !opencode || !$('b-full-offensive').checked);
   $('target').placeholder = code
-    ? 'Target tidak diperlukan untuk audit kode (unggah ZIP di bawah)'
+    ? 'Target tidak diperlukan untuk audit kode (pilih ZIP atau folder di bawah)'
     : 'Target, e.g. http://127.0.0.1:3000';
   if (opencode && !$('b-opencode-model').dataset.loaded) loadOpencodeModels();
   if (code && !$('b-code-model').dataset.loaded) loadCodeModels();
+  if (code) syncCodeSource();
 }
+
+function codeSourceKind() {
+  return $('b-code-source-folder').checked ? 'folder' : 'zip';
+}
+
+function syncCodeSource() {
+  const folder = codeSourceKind() === 'folder';
+  $('b-code-zip-row').classList.toggle('hidden', folder);
+  $('b-code-folder-row').classList.toggle('hidden', !folder);
+}
+
 $('b-engine').addEventListener('change', syncEngine);
 $('b-full-offensive').addEventListener('change', syncEngine);
+$('b-code-source-zip').addEventListener('change', syncCodeSource);
+$('b-code-source-folder').addEventListener('change', syncCodeSource);
 syncEngine();
 
 async function loadCodeModels() {
@@ -1264,13 +1278,20 @@ $('start-btn').addEventListener('click', async () => {
     }
   }
   if (engine === 'code') {
+    const kind = codeSourceKind();
     const file = $('b-code-file').files[0];
+    const sourcePath = $('b-code-path').value.trim();
     const goal = $('instruction').value.trim();
-    if (!file) { alert('pilih file ZIP source code dulu'); return; }
-    if (!file.name.toLowerCase().endsWith('.zip')) { alert('hanya file .zip'); return; }
+    if (kind === 'zip') {
+      if (!file) { alert('pilih file ZIP source code dulu'); return; }
+      if (!file.name.toLowerCase().endsWith('.zip')) { alert('hanya file .zip'); return; }
+    } else if (!sourcePath) {
+      alert('isi path folder source code dulu'); return;
+    }
     if (!goal) { alert('tuliskan tujuan audit kode'); return; }
     const form = new FormData();
-    form.append('file', file);
+    if (kind === 'zip') form.append('file', file);
+    else form.append('source_path', sourcePath);
     form.append('instruction', goal);
     form.append('model', $('b-code-model').value.trim());
     form.append('time_budget', $('b-time').value.trim() || '900');

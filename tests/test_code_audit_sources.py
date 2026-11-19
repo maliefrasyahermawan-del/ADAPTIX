@@ -57,3 +57,51 @@ def test_rejects_oversized_file():
 def test_rejects_archive_without_text_source():
     with pytest.raises(ValueError):
         unpack(_zip({'image.png': b'\x89PNG'}))
+
+
+def test_directory_bundle_reads_text_and_skips_private_entries(tmp_path):
+    from src.adaptix.code_audit.sources import directory_bundle
+    source = tmp_path / 'project'
+    (source / 'pkg').mkdir(parents=True)
+    (source / 'pkg' / 'app.py').write_text(
+        "API_KEY = 'sk-abcdefghijklmnopqrstuvwxyz123456'\nprint(1)\n", encoding='utf-8')
+    (source / 'README.md').write_text('hello', encoding='utf-8')
+    (source / '.env').write_text('SECRET=1', encoding='utf-8')
+    (source / 'node_modules').mkdir()
+    (source / 'node_modules' / 'x.js').write_text('x', encoding='utf-8')
+    (source / 'logo.png').write_bytes(b'\x89PNG')
+    bundle = directory_bundle(source)
+    assert set(bundle['files']) == {'pkg/app.py', 'README.md'}
+    assert bundle['name'] == 'project'
+    assert bundle['excluded'] == 2
+    assert 'sk-abcdefghijklmnopqrstuvwxyz123456' not in bundle['files']['pkg/app.py']['text']
+    assert '[REDACTED]' in bundle['files']['pkg/app.py']['text']
+
+
+def test_directory_bundle_rejects_missing_folder(tmp_path):
+    from src.adaptix.code_audit.sources import directory_bundle
+    with pytest.raises(ValueError):
+        directory_bundle(tmp_path / 'missing')
+
+
+def test_directory_bundle_honours_allowed_roots(tmp_path, monkeypatch):
+    from src.adaptix.code_audit.sources import directory_bundle
+    allowed = tmp_path / 'allowed'
+    outside = tmp_path / 'outside'
+    (allowed / 'src').mkdir(parents=True)
+    (allowed / 'src' / 'app.py').write_text('print(1)', encoding='utf-8')
+    outside.mkdir()
+    (outside / 'app.py').write_text('print(1)', encoding='utf-8')
+    monkeypatch.setenv('ADAPTIX_CODE_AUDIT_ROOTS', str(allowed))
+    assert 'src/app.py' in directory_bundle(allowed)['files']
+    with pytest.raises(ValueError):
+        directory_bundle(outside)
+
+
+def test_directory_bundle_skips_symlinks(tmp_path):
+    from src.adaptix.code_audit.sources import directory_bundle
+    source = tmp_path / 'project'
+    source.mkdir()
+    (source / 'app.py').write_text('print(1)', encoding='utf-8')
+    (source / 'link.py').symlink_to(source / 'app.py')
+    assert set(directory_bundle(source)['files']) == {'app.py'}
