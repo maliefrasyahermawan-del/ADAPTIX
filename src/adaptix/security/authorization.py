@@ -34,7 +34,11 @@ def _key(create=False):
             pass
     if not KEY_PATH.is_file():
         raise ValueError('Signing key belum dibuat. Admin jalankan: python -m src.adaptix.security.authorization init')
-    if KEY_PATH.stat().st_mode & 0o077:
+    # Windows has no POSIX group/other bits: os.stat() always synthesizes 0o666
+    # for a writable file there, so this check can never pass and would block
+    # every run. The key's real protection on Windows is the NTFS ACL on the
+    # user's own project folder, which this check cannot see.
+    if os.name != 'nt' and KEY_PATH.stat().st_mode & 0o077:
         raise ValueError('Signing key permissions terlalu terbuka; gunakan chmod 600 config/.adaptix_scope_signing_key')
     return KEY_PATH.read_bytes()
 

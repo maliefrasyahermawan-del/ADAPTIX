@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADAPTIX</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar" id="sidebar">
+    <div id="sidebar-main" class="sidebar-mode">
+      <div class="brand" id="brand-btn">
+        <div class="brand-icon" data-icon="network"></div>
+        <div class="brand-text">
+          <div class="brand-name">ADAPTIX</div>
+          <div class="brand-ver" id="brand-ver">adaptive pentest agent</div>
+        </div>
+        <span class="brand-chevron" data-icon="chevrons"></span>
+      </div>
+      <div id="version-popover" class="version-popover hidden">
+        <div class="version-popover-head">
+          <div id="vp-title">ADAPTIX</div>
+        </div>
+        <div class="version-popover-body" id="vp-body">Loading...</div>
+        <a id="vp-repo" class="version-popover-link hidden" href="#" target="_blank">View on GitHub ↗</a>
+      </div>
+      <button id="rail-new-flow" class="rail-new" title="New flow"><span class="rail-new-ico" data-icon="plus"></span></button>
+      <nav class="nav">
+        <button class="nav-item" data-tab="dashboard" title="Dashboard"><span class="nav-ico" data-icon="dashboard"></span>Dashboard</button>
+        <button class="nav-item active" data-tab="flows" title="Flows"><span class="nav-ico" data-icon="flows"></span>Flows</button>
+        <button class="nav-item" data-tab="templates" title="Templates"><span class="nav-ico" data-icon="templates"></span>Templates</button>
+        <button class="nav-item" data-tab="resources" title="Resources"><span class="nav-ico" data-icon="resources"></span>Resources</button>
+        <button class="nav-item" data-tab="knowledges" title="Knowledges"><span class="nav-ico" data-icon="knowledges"></span>Knowledges</button>
+      </nav>
+      <div class="section-label"><span class="section-ico" data-icon="clock"></span>Recent Flows</div>
+      <div id="recent-flows" class="recent-flows"><div class="empty-small">no flows yet</div></div>
+      <div class="sidebar-spacer"></div>
+      <div class="sidebar-footer">
+        <button class="settings-link" id="open-settings" title="Settings">
+          <span class="nav-ico" data-icon="settings"></span>Settings
+        </button>
+        <div class="user-row" id="user-row" title="Account">
+          <div class="avatar"><span class="avatar-ico" data-icon="user"></span></div>
+          <div class="user-info">
+            <div class="user-name" id="user-name">admin</div>
+            <div class="user-sub" id="user-email">admin@adaptix.local</div>
+          </div>
+          <span class="user-chevron" data-icon="chevrons"></span>
+        </div>
+      </div>
+    </div>
+
+    <div id="sidebar-settings" class="sidebar-mode hidden">
+      <div class="brand settings-brand">
+        <div class="brand-icon" data-icon="settings"></div>
+        <div class="brand-text">
+          <div class="brand-name">Settings</div>
+          <div class="brand-ver" id="settings-ver">v0.1.1</div>
+        </div>
+        <span class="brand-chevron" data-icon="chevrons"></span>
+      </div>
+      <nav class="nav settings-nav">
+        <button class="nav-item settings-item active" data-settings="account" title="Account"><span class="nav-ico" data-icon="user"></span>Account</button>
+        <button class="nav-item settings-item" data-settings="providers" title="Providers"><span class="nav-ico" data-icon="plug"></span>Providers</button>
+        <button class="nav-item settings-item" data-settings="prompts" title="Prompts"><span class="nav-ico" data-icon="doc"></span>Prompts</button>
+        <button class="nav-item settings-item" data-settings="tokens" title="API Tokens"><span class="nav-ico" data-icon="key"></span>API Tokens</button>
+      </nav>
+      <div class="sidebar-spacer"></div>
+      <div class="sidebar-footer settings-footer">
+        <button class="back-to-app" id="back-to-app"><span class="back-ico" data-icon="arrow-left"></span>Back to App</button>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">
+        <button id="sidebar-toggle" class="icon-btn" title="Toggle sidebar"><span class="toggle-ico" data-icon="panel-left"></span></button>
+        <span class="topbar-sep"></span>
+        <span class="status-dot" id="status-dot"></span>
+        <span id="run-title">no active run</span>
+      </div>
+      <div class="topbar-right">
+        <span class="pill" id="status-pill">idle</span>
+        <span class="elapsed" id="elapsed">0s</span>
+      </div>
+    </header>
+
+    <section id="panel-dashboard" class="panel">
+      <div class="dash-toolbar">
+        <div class="tab-pill-group">
+          <button class="tab-pill active" data-dash="analytics">Analytics</button>
+          <button class="tab-pill" data-dash="overview">Overview</button>
+        </div>
+        <div class="tab-pill-group" id="dash-period-group">
+          <button class="tab-pill active" data-period="week">Week</button>
+          <button class="tab-pill" data-period="month">Month</button>
+          <button class="tab-pill" data-period="quarter">Quarter</button>
+        </div>
+      </div>
+
+      <div id="dash-analytics" class="dash-scroll">
+        <div class="dash-card">
+          <div class="dash-card-title">Flows Activity Over Time</div>
+          <div class="dash-card-sub">Flows, tasks, and subtasks created per day</div>
+          <div id="chart-flows-activity"></div>
+        </div>
+      </div>
+
+      <div id="dash-overview" class="dash-scroll hidden">
+        <div class="ov-cards" id="dashboard-cards"></div>
+        <div class="dash-card ana-card">
+          <div class="ana-title">Usage by Provider</div>
+          <div class="ana-sub">LLM token usage and costs grouped by provider</div>
+          <div class="ana-table-wrap">
+            <table class="ana-table">
+              <thead><tr><th>Name</th><th>Tokens In</th><th>Tokens Out</th><th>Cache In</th>
+                <th>Cache Out</th><th>Cost In</th><th>Cost Out</th><th>Total Cost</th></tr></thead>
+              <tbody id="ana-provider-body"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="dash-card ana-card">
+          <div class="ana-title">Usage by Model</div>
+          <div class="ana-sub">LLM token usage and costs grouped by model</div>
+          <div class="ana-table-wrap">
+            <table class="ana-table">
+              <thead><tr><th>Name</th><th>Tokens In</th><th>Tokens Out</th><th>Cache In</th>
+                <th>Cache Out</th><th>Cost In</th><th>Cost Out</th><th>Total Cost</th></tr></thead>
+              <tbody id="ana-model-body"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="dash-card ana-card">
+          <div class="ana-title">Usage by Agent Type</div>
+          <div class="ana-sub">LLM token usage and costs grouped by agent type</div>
+          <div class="ana-table-wrap">
+            <table class="ana-table">
+              <thead><tr><th>Name</th><th>Tokens In</th><th>Tokens Out</th><th>Cache In</th>
+                <th>Cache Out</th><th>Cost In</th><th>Cost Out</th><th>Total Cost</th></tr></thead>
+              <tbody id="ana-agent-body"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="dash-card ana-card">
+          <div class="ana-title">Tool Calls by Function</div>
+          <div class="ana-sub">Execution statistics for each tool function</div>
+          <div class="ana-table-wrap">
+            <table class="ana-table">
+              <thead><tr><th>Function</th><th>Type</th><th>Count</th>
+                <th>Total Duration</th><th>Avg Duration</th></tr></thead>
+              <tbody id="ana-tool-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-flows" class="panel active">
+      <div id="flows-table-view" class="flows-table-view hidden">
+        <div class="flows-table-header">
+          <input id="flows-filter" type="text" placeholder="Filter flows...">
+          <button id="new-flow-btn" class="btn-primary">+ New Flow</button>
+        </div>
+        <div class="flows-table-wrap">
+          <table class="flows-table">
+            <thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Provider</th><th>Target</th><th>Created</th></tr></thead>
+            <tbody id="flows-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="new-flow-view" class="new-flow-card">
+        <button id="new-flow-close" class="icon-btn new-flow-close hidden" title="Back to flows">✕</button>
+        <h1>Create a new flow</h1>
+        <div class="new-flow-sub">Describe what you would like ADAPTIX to test</div>
+        <div class="composer">
+          <div class="composer-row">
+            <input id="target" type="text" placeholder="Target, e.g. http://127.0.0.1:3000">
+            <button id="budget-toggle" class="icon-btn" title="Budgets">⚙</button>
+          </div>
+          <div class="engine-picker">
+            <label class="engine-label">Engine
+              <select id="b-engine">
+                <option value="adaptix">ADAPTIX native</option>
+                <option value="opencode">OpenCode Pentester</option>
+                <option value="code">Audit kode (ZIP, statis)</option>
+              </select>
+            </label>
+            <div id="code-options" class="opencode-options hidden">
+              <label>source code (.zip)
+                <input id="b-code-file" type="file" accept=".zip,application/zip">
+              </label>
+              <label>model audit
+                <select id="b-code-model">
+                  <option value="">(dari .env)</option>
+                </select>
+              </label>
+              <label>max iterasi
+                <input id="b-code-iterations" type="text" value="8">
+              </label>
+              <div class="code-note">ZIP maks 4 MB / 300 file teks. Source tidak dieksekusi,
+                tidak diinstal, dan tidak dikirim ke jaringan selain provider model.</div>
+            </div>
+            <div id="opencode-options" class="opencode-options hidden">
+              <label>opencode model
+                <select id="b-opencode-model">
+                  <option value="deepseek/deepseek-flash">deepseek/deepseek-flash</option>
+                </select>
+              </label>
+              <label>focus <input id="b-focus" type="text" placeholder="web-app, injection, auth"></label>
+              <label class="check-label"><input id="b-reviewer" type="checkbox" checked> Reviewer insights</label>
+              <label class="check-label danger-check"><input id="b-full-offensive" type="checkbox"> Full offensive</label>
+            </div>
+          </div>
+          <div id="full-offensive-panel" class="danger-panel hidden">
+            <div class="danger-title">Full offensive mode</div>
+            <div class="danger-text">Semua kategori, exploit/post-exploit, tanpa dialog. Hanya untuk target yang Anda miliki izin tertulisnya.</div>
+            <label class="check-label"><input id="b-authorized" type="checkbox"> Saya punya izin tertulis untuk target ini</label>
+            <input id="b-confirm-target" type="text" placeholder="ketik host target untuk konfirmasi">
+            <div class="danger-note">Opencode-pentester memakai scope host-level dan scan port sendiri. Pastikan target memang dalam wewenang Anda.</div>
+          </div>
+          <div id="budget-panel" class="budget-panel hidden">
+            <label>time (s) <input id="b-time" type="text" value="2400"></label>
+            <label>tool calls <input id="b-tools" type="text" value="90"></label>
+            <label>tokens <input id="b-tokens" type="text" value="5000000"></label>
+            <label>model <input id="b-model" type="text" placeholder="(from .env)"></label>
+            <label>identity file <select id="b-identity"><option value="">(none)</option></select></label>
+            <label>knowledge notes <select id="b-knowledge" multiple size="2"></select></label>
+          </div>
+          <div class="composer-row">
+            <textarea id="instruction" rows="2" placeholder="Describe what you would like ADAPTIX to test..."></textarea>
+            <button id="start-btn" class="send-btn" title="Start new flow">▶</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-templates" class="panel">
+      <div class="page-header">
+        <div></div>
+        <button id="new-template-btn" class="btn-primary">+ New Template</button>
+      </div>
+      <div id="templates-list" class="findings-list"></div>
+      <div id="new-template-form" class="inline-form hidden">
+        <input id="tpl-name" type="text" placeholder="Template name, e.g. Quick auth check">
+        <input id="tpl-target" type="text" placeholder="Target, e.g. http://127.0.0.1:3000 (optional)">
+        <textarea id="tpl-objective" rows="2" placeholder="Objective..."></textarea>
+        <div class="inline-form-row">
+          <button id="tpl-cancel" class="icon-btn" style="width:auto;padding:0 14px;">Cancel</button>
+          <button id="tpl-save" class="btn-primary">Save template</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-resources" class="panel">
+      <div class="page-header">
+        <input id="resources-filter" type="text" placeholder="Search resources...">
+        <button id="upload-resource-btn" class="btn-primary">⬆ Upload file</button>
+        <input id="resource-file-input" type="file" class="hidden">
+      </div>
+      <div class="resources-hint">Identity JSON files you upload here can be picked when starting a flow
+        (passed to ADAPTIX as <code>--identity-context</code>), a real file, not a mock.</div>
+      <div id="resources-list" class="findings-list"></div>
+    </section>
+
+    <section id="panel-knowledges" class="panel">
+      <div class="page-header">
+        <div></div>
+        <button id="new-knowledge-btn" class="btn-primary">+ New Knowledge</button>
+      </div>
+      <div class="resources-hint">ADAPTIX has no vector store. A note you select here is prepended as plain
+        text to the next flow's objective, not retrieved by embedding search.</div>
+      <div id="knowledge-list" class="findings-list"></div>
+      <div id="new-knowledge-form" class="inline-form hidden">
+        <input id="kn-title" type="text" placeholder="Title, e.g. Client-provided scope notes">
+        <textarea id="kn-content" rows="4" placeholder="Content..."></textarea>
+        <div class="inline-form-row">
+          <button id="kn-cancel" class="icon-btn" style="width:auto;padding:0 14px;">Cancel</button>
+          <button id="kn-save" class="btn-primary">Save note</button>
+        </div>
+      </div>
+    </section>
+    <div id="settings-fullpage" class="settings-fullpage hidden">
+      <header class="settings-topbar">
+        <button id="sidebar-toggle-3" class="icon-btn" title="Toggle sidebar"><span id="settings-toggle-ico" data-icon="panel-left"></span></button>
+        <span class="settings-topbar-sep"></span>
+        <span class="settings-crumb-ico" id="settings-crumb-ico"></span>
+        <span class="settings-crumb" id="settings-crumb">Account</span>
+      </header>
+      <div class="settings-scroll">
+        <div class="settings-inner" id="settings-content"></div>
+      </div>
+    </div>
+    <div id="flow-fullpage" class="flow-fullpage hidden">
+      <header class="flow-fullpage-header">
+        <button id="sidebar-toggle-2" class="icon-btn" title="Toggle sidebar"><span class="toggle-ico" data-icon="panel-left"></span></button>
+        <span class="flow-fullpage-sep"></span>
+        <button id="flow-back-btn" class="icon-btn" title="Back to flows">☰</button>
+        <span class="status-dot" id="ff-status-dot"></span>
+        <span class="flow-fullpage-title" id="ff-title">flow</span>
+        <div class="flow-fullpage-right">
+          <button id="ff-report-btn" class="pill ff-report-btn hidden">📋 Report</button>
+          <span class="pill hidden" id="ff-live-pill">live</span>
+          <span class="pill" id="ff-page">1/1</span>
+          <button id="ff-star-btn" class="icon-btn" title="Favorite">☆</button>
+          <div class="ff-menu-wrap">
+            <button id="ff-menu-btn" class="icon-btn" title="More">⋯</button>
+            <div id="ff-menu" class="ff-menu hidden">
+              <button id="ff-rename-btn">✎ Rename</button>
+              <button id="ff-finish-btn">⏹ Finish</button>
+              <button id="ff-delete-btn" class="danger">🗑 Delete</button>
+            </div>
+          </div>
+        </div>
+      </header>
+      <div class="flow-tabs-wrap"><div class="flow-tabs" id="ff-tabs"></div></div>
+      <div class="flow-search-row">
+        <span class="search-icon">🔍</span>
+        <input id="ff-search" type="text" placeholder="Search...">
+      </div>
+      <div class="flow-tab-content" id="ff-content"></div>
+    </div>
+  </main>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

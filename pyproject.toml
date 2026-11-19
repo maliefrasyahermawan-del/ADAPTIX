@@ -18,6 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]
 dev = ["langgraph-cli[inmem]>=0.4,<1"]
+web = ["Flask>=3,<4"]
 
 [tool.setuptools.packages.find]
 include = ["src*"]
@@ -34,3 +35,4 @@ pythonpath = ["."]
 
 [project.scripts]
 adaptix = "src.adaptix.ui_entry:main"
+adaptix-web = "src.adaptix.web_entry:main"

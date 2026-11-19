@@ -314,6 +314,13 @@ class LiveView:
     tool_budget: int | None = 90
     token_budget: int | None = 5000000
     max_iterations: int = 40
+    # External engine state (opencode-pentester). ADAPTIX-native runs leave these empty.
+    engine: str = 'adaptix'
+    full_offensive: bool = False
+    focus: str = ''
+    opencode_model: str = ''
+    reviewer: bool = True
+    external: dict = field(default_factory=dict)
 
     def header_lines(self) -> list[str]:
         target = ', '.join(self.target) or '(no target — type /target <url>)'

@@ -69,3 +69,12 @@ config/.adaptix_scope_signing_key
 /artifacts/scans/
 *.bak
 *.bak_*
+
+# Embedded reference checkout (full duplicate of the project)
+vendor/ADAPTIX-V2/
+
+# WSL virtual environment
+.venv-wsl/
+
+# Runtime web UI state
+work/web_data/
