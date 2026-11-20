@@ -77,7 +77,8 @@ def _apply_report(view, run_dir):
     view.external = external
 
 
-def start_code(runner, instruction, archive, filename, model, budgets, *, source_path=None):
+def start_code(runner, instruction, archive, filename, model, budgets, *, source_path=None,
+               auto_patch=False):
     """Validate the source (ZIP or local folder), persist its sanitized bundle, start the worker."""
     run_id = time.strftime('code-%H%M%S')
     base = _run_dir(run_id)
@@ -108,7 +109,8 @@ def start_code(runner, instruction, archive, filename, model, budgets, *, source
         'source_name': filename, 'source_path': str(bundle.get('source_path') or ''),
         'source_sha256': bundle['sha256'], 'files': len(bundle['files']),
         'excluded': bundle['excluded'], 'instruction': instruction,
-        'model': model, 'budgets': budgets, 'created': time.time(),
+        'model': model, 'budgets': budgets, 'auto_patch': bool(auto_patch),
+        'created': time.time(),
     }
     (base / 'code-meta.json').write_text(json.dumps(request, indent=2), encoding='utf-8')
     (base / 'code-request.json').write_text(
@@ -138,6 +140,8 @@ def start_code(runner, instruction, archive, filename, model, budgets, *, source
         'excluded': bundle['excluded']}, 'activity': []}
     view.append(f'source: {display} · {source_kind} ({len(bundle["files"])} file teks, '
                 f'{bundle["excluded"]} dikecualikan)')
+    if auto_patch:
+        view.append('auto-patch: aktif (tulis ke folder sumber setelah laporan, dengan backup)')
     view.append(f'objective: {instruction[:160]}')
 
     interpreter = runner.interpreter()
@@ -146,6 +150,8 @@ def start_code(runner, instruction, archive, filename, model, budgets, *, source
             '--time-budget', str(int(budgets.get('time_budget') or 900)),
             '--token-budget', str(int(budgets.get('token_budget') or 50000)),
             '--max-iterations', str(int(budgets.get('max_iterations') or 8))]
+    if auto_patch:
+        argv.append('--auto-patch')
     env = dict(os.environ, PYTHONUNBUFFERED='1')
     runner.process = subprocess.Popen(argv, cwd=str(ROOT), env=env,
                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

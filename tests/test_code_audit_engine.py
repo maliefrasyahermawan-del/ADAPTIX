@@ -126,6 +126,22 @@ def test_network_and_terminal_actions_are_not_in_the_schema():
             Action.model_validate({'tool': name, 'arguments': {}})
 
 
+def test_reasoning_effort_none_is_omitted(monkeypatch):
+    import litellm
+    import src.adaptix.code_audit.engine as engine
+    calls = []
+
+    def fake_completion(**kwargs):
+        calls.append(kwargs)
+        return {'ok': True}
+
+    monkeypatch.setattr(litellm, 'completion', fake_completion)
+    monkeypatch.setenv('ADAPTIX_REASONING_EFFORT', 'none')
+    engine._provider_call([{'role': 'user', 'content': 'x'}], model='openai/test/model',
+                          api_base=None, api_key=None, max_tokens=10, timeout=5)
+    assert 'reasoning_effort' not in calls[0]
+
+
 def test_provider_rejecting_reasoning_effort_is_retried_without_it(monkeypatch):
     import litellm
     import src.adaptix.code_audit.engine as engine
@@ -139,10 +155,207 @@ def test_provider_rejecting_reasoning_effort_is_retried_without_it(monkeypatch):
         return {'ok': True}
 
     monkeypatch.setattr(litellm, 'completion', fake_completion)
-    monkeypatch.setenv('ADAPTIX_REASONING_EFFORT', 'none')
+    monkeypatch.setenv('ADAPTIX_REASONING_EFFORT', 'low')
     result = engine._provider_call(
         [{'role': 'user', 'content': 'x'}], model='openai/test/model',
         api_base=None, api_key=None, max_tokens=10, timeout=5)
     assert result == {'ok': True}
     assert len(calls) == 2
     assert 'reasoning_effort' not in calls[1]
+
+
+def test_auto_patch_writes_report_patch_to_local_folder(tmp_path):
+    from src.adaptix.code_audit.sources import write_directory_bundle
+    source = tmp_path / 'project' / 'dist'
+    source.mkdir(parents=True)
+    (source / 'app.py').write_text(
+        "def lookup(name):\n    return db.execute(\"SELECT * FROM users WHERE name = '%s'\" % name)\n",
+        encoding='utf-8')
+    run_dir = tmp_path / 'run'
+    bundle = write_directory_bundle(run_dir, source)
+    search = 'db.execute("SELECT * FROM users WHERE name = \'%s\'" % name)'
+    replacement = 'db.execute("SELECT * FROM users WHERE name = ?", (name,))'
+    calls = {'n': 0}
+
+    def call(**kwargs):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            return _response(json.dumps({
+                'commentary': 'Baca app.py.',
+                'action': {'tool': 'read_source', 'arguments': {'path': 'app.py'}}}))
+        obs = _observation_id(kwargs['messages'])
+        return _response(json.dumps({
+            'commentary': 'Laporan dan patch.',
+            'report': {
+                'title': 'SQL injection',
+                'executive_summary': 'x', 'methodology': 'y',
+                'findings': [{'title': 'SQLi', 'severity': 'high',
+                              'evidence_ids': [obs], 'description': 'x',
+                              'impact': 'x', 'remediation': 'x', 'cwe': 'CWE-89'}],
+                'patches': [{'path': 'app.py', 'search': search,
+                             'replace': replacement, 'rationale': 'parameterized'}],
+                'limitations': 'z', 'next_steps': 'z'}}))
+
+    state = run_audit(run_dir, 'Cari dan patch', model='fake/model', bundle=bundle,
+                      token_budget=50000, max_iterations=6, call=call, auto_patch=True)
+    assert state['status'] == 'completed'
+    assert 'WHERE name = ?' in (source / 'app.py').read_text(encoding='utf-8')
+    assert state['patches']['applied_count'] == 1
+    record = json.loads((run_dir / 'code-report.json').read_text(encoding='utf-8'))
+    assert record['patches']['applied_count'] == 1
+    assert (run_dir / 'patches' / 'backup' / 'app.py').is_file()
+    applied = record['patches']['applied'][0]
+    assert applied['line'] == 2
+    assert 'name = ?' in applied['after']
+    markdown = (run_dir / 'code-report.md').read_text(encoding='utf-8')
+    assert 'baris 2' in markdown
+    assert 'Sebelum:' in markdown and 'Sesudah:' in markdown
+
+
+def test_rate_limit_is_retried_and_then_recovers(tmp_path, monkeypatch):
+    run_dir = tmp_path / 'run'
+    bundle = write_bundle(run_dir, _zip(), 'app.zip')
+    calls = {'n': 0}
+    monkeypatch.setenv('ADAPTIX_PROVIDER_RETRY_DELAY', '0.01')
+
+    def call(**kwargs):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            raise RuntimeError('429 Too Many Requests: rate limited')
+        return _response(json.dumps({
+            'commentary': 'Tidak ada temuan.',
+            'report': {
+                'title': 'Audit', 'executive_summary': 'x', 'methodology': 'y',
+                'findings': [], 'limitations': 'z', 'next_steps': 'z'}}))
+
+    state = run_audit(run_dir, 'Cari', model='fake/model', bundle=bundle,
+                      token_budget=50000, max_iterations=3, call=call)
+    assert calls['n'] == 2
+    assert state['status'] == 'completed'
+    assert state['stop_reason'] == 'model_reported'
+
+
+def test_persistent_rate_limit_reports_specific_stop_reason(tmp_path, monkeypatch):
+    run_dir = tmp_path / 'run'
+    bundle = write_bundle(run_dir, _zip(), 'app.zip')
+    calls = {'n': 0}
+    monkeypatch.setenv('ADAPTIX_PROVIDER_RETRY_DELAY', '0.01')
+
+    def call(**kwargs):
+        calls['n'] += 1
+        raise RuntimeError('429 Too Many Requests: rate limited')
+
+    state = run_audit(run_dir, 'Cari', model='fake/model', bundle=bundle,
+                      token_budget=50000, max_iterations=3, call=call)
+    assert calls['n'] == 4
+    assert state['status'] == 'completed_with_errors'
+    assert state['stop_reason'] == 'provider_rate_limited'
+
+
+def test_duplicate_read_is_blocked_and_model_can_finish(tmp_path):
+    run_dir = tmp_path / 'run'
+    bundle = write_bundle(run_dir, _zip(), 'app.zip')
+    calls = {'n': 0}
+
+    def call(**kwargs):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            return _response(json.dumps({
+                'commentary': 'Baca app.py.',
+                'action': {'tool': 'read_source', 'arguments': {'path': 'app.py'}}}))
+        if calls['n'] == 2:
+            return _response(json.dumps({
+                'commentary': 'Baca ulang.',
+                'action': {'tool': 'read_source', 'arguments': {'path': 'app.py'}}}))
+        if calls['n'] == 3:
+            payload = json.loads(kwargs['messages'][-1]['content'])
+            assert 'sudah dibaca' in payload['feedback']
+            return _response(json.dumps({
+                'commentary': 'Bukti cukup.',
+                'report': {'title': 'Audit', 'executive_summary': 'x',
+                           'methodology': 'y', 'findings': [],
+                           'limitations': 'z', 'next_steps': 'z'}}))
+        raise AssertionError('model should have finished')
+
+    state = run_audit(run_dir, 'Cari', model='fake/model', bundle=bundle,
+                      token_budget=50000, max_iterations=6, call=call)
+    assert state['status'] == 'completed'
+    assert len(state['observations']) == 1
+
+
+def test_low_iteration_budget_directs_model_to_report(tmp_path):
+    run_dir = tmp_path / 'run'
+    bundle = write_bundle(run_dir, _zip(), 'app.zip')
+    seen = {}
+
+    def call(**kwargs):
+        payload = json.loads(kwargs['messages'][-1]['content'])
+        seen['directive'] = payload.get('directive', '')
+        return _response(json.dumps({
+            'commentary': 'Laporan.',
+            'report': {'title': 'Audit', 'executive_summary': 'x', 'methodology': 'y',
+                       'findings': [], 'limitations': 'z', 'next_steps': 'z'}}))
+
+    state = run_audit(run_dir, 'Cari', model='fake/model', bundle=bundle,
+                      token_budget=50000, max_iterations=2, call=call)
+    assert state['status'] == 'completed'
+    assert 'JANGAN membaca file lagi' in seen['directive']
+
+
+def test_invalid_model_output_is_logged_with_validator_detail(tmp_path):
+    run_dir = tmp_path / 'run'
+    bundle = write_bundle(run_dir, _zip(), 'app.zip')
+
+    def call(**kwargs):
+        return _response('{not valid json')
+
+    state = run_audit(run_dir, 'Cari', model='fake/model', bundle=bundle,
+                      token_budget=50000, max_iterations=4, call=call)
+    assert state['status'] == 'completed_with_errors'
+    assert state['stop_reason'] == 'model_schema_failed'
+    assert 'Error terakhir:' in state['error']
+    errors = (run_dir / 'code-model-errors.ndjson').read_text(encoding='utf-8').splitlines()
+    assert len(errors) == 3
+    first = json.loads(errors[0])
+    assert first['content'] == '{not valid json'
+    assert 'error' in first
+
+
+def test_first_json_object_wins_when_model_emits_two(tmp_path):
+    run_dir = tmp_path / 'run'
+    bundle = write_bundle(run_dir, _zip(), 'app.zip')
+    calls = {'n': 0}
+
+    def call(**kwargs):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            return _response(json.dumps({
+                'commentary': 'Baca app.py.',
+                'action': {'tool': 'read_source', 'arguments': {'path': 'app.py'}}})
+                + '\n\n' + json.dumps({
+                    'commentary': 'Duplikat.',
+                    'action': {'tool': 'read_source', 'arguments': {'path': 'app.py'}}}))
+        return _response(json.dumps({
+            'commentary': 'Laporan.',
+            'report': {'title': 'Audit', 'executive_summary': 'x', 'methodology': 'y',
+                       'findings': [], 'limitations': 'z', 'next_steps': 'z'}}))
+
+    state = run_audit(run_dir, 'Cari', model='fake/model', bundle=bundle,
+                      token_budget=50000, max_iterations=4, call=call)
+    assert state['status'] == 'completed'
+    assert calls['n'] == 2
+    assert len(state['observations']) == 1
+
+
+def test_provider_content_refusal_is_not_reported_as_schema_failure(tmp_path):
+    run_dir = tmp_path / 'run'
+    bundle = write_bundle(run_dir, _zip(), 'app.zip')
+
+    def call(**kwargs):
+        return _response('[req_x] [glm-5.3]\n**Request rejected by AI provider (HTTP 400)**\n'
+                         '- Most common cause: its CONTENT FILTER / safety moderation rejected the prompt.')
+
+    state = run_audit(run_dir, 'Cari', model='fake/model', bundle=bundle,
+                      token_budget=50000, max_iterations=3, call=call)
+    assert state['stop_reason'] == 'provider_rejected'
+    assert not (run_dir / 'code-model-errors.ndjson').exists()

@@ -29,12 +29,21 @@ class Finding(BaseModel):
     cwe: str = Field(default='', max_length=40)
 
 
+class Patch(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    path: str = Field(min_length=1, max_length=1024)
+    search: str = Field(min_length=1, max_length=20000)
+    replace: str = Field(default='', max_length=20000)
+    rationale: str = Field(min_length=1, max_length=1000)
+
+
 class Report(BaseModel):
     model_config = ConfigDict(extra='forbid')
     title: str = Field(min_length=1, max_length=240)
     executive_summary: str = Field(min_length=1, max_length=8000)
     methodology: str = Field(min_length=1, max_length=5000)
     findings: list[Finding] = Field(default_factory=list, max_length=50)
+    patches: list[Patch] = Field(default_factory=list, max_length=20)
     limitations: str = Field(min_length=1, max_length=5000)
     next_steps: str = Field(min_length=1, max_length=5000)
 

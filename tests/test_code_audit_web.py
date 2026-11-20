@@ -94,9 +94,10 @@ def test_folder_source_starts_code_engine(monkeypatch, tmp_path):
     (source / 'app.py').write_text('print(1)\n', encoding='utf-8')
     calls = {}
 
-    def fake_start(runner, instruction, archive, filename, model, budgets, *, source_path=None):
+    def fake_start(runner, instruction, archive, filename, model, budgets, *, source_path=None,
+                   auto_patch=False):
         calls.update(archive=archive, filename=filename, source_path=source_path,
-                     instruction=instruction, budgets=budgets)
+                     auto_patch=auto_patch, instruction=instruction, budgets=budgets)
         runner.view.engine = 'code'
         runner.view.run_id = 'code-fake'
         runner.view.status = 'starting'
@@ -125,3 +126,41 @@ def test_requires_zip_or_folder(monkeypatch):
         'instruction': 'Audit',
     }, content_type='multipart/form-data')
     assert response.status_code == 400
+
+
+def test_folder_auto_patch_flag_reaches_engine(monkeypatch, tmp_path):
+    monkeypatch.setattr(webapp, 'runner', webapp.Runner(webapp._default_view()))
+    client = webapp.create_app().test_client()
+    calls = {}
+
+    def fake_start(runner, instruction, archive, filename, model, budgets, *, source_path=None,
+                   auto_patch=False):
+        calls.update(source_path=source_path, auto_patch=auto_patch)
+        runner.view.engine = 'code'
+        runner.view.run_id = 'code-fake'
+        runner.view.status = 'starting'
+        runner.view.target = [str(source_path)]
+        runner.view.model = model
+        runner.view.details = []
+        return 'code-fake'
+
+    monkeypatch.setattr(webapp, 'start_code', fake_start)
+    response = client.post('/api/audit/code', data={
+        'source_path': str(tmp_path),
+        'instruction': 'Audit folder',
+        'auto_patch': '1',
+    }, content_type='multipart/form-data')
+    assert response.status_code == 200
+    assert calls['auto_patch'] is True
+
+
+def test_auto_patch_rejects_zip(monkeypatch):
+    monkeypatch.setattr(webapp, 'runner', webapp.Runner(webapp._default_view()))
+    client = webapp.create_app().test_client()
+    response = client.post('/api/audit/code', data={
+        'file': (io.BytesIO(_zip()), 'source.zip'),
+        'instruction': 'Audit',
+        'auto_patch': '1',
+    }, content_type='multipart/form-data')
+    assert response.status_code == 400
+    assert 'folder lokal' in response.get_json()['error']

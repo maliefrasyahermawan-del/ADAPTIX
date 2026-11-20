@@ -953,6 +953,9 @@ def create_app() -> Flask:
                 return jsonify({'error': 'ZIP maksimal 4 MB'}), 400
         elif not source_path:
             return jsonify({'error': 'unggah file ZIP atau isi path folder source'}), 400
+        auto_patch = str(request.form.get('auto_patch') or '').lower() in ('1', 'true', 'on', 'yes')
+        if auto_patch and not source_path:
+            return jsonify({'error': 'patch otomatis hanya tersedia untuk folder lokal'}), 400
         instruction = str(request.form.get('instruction') or '').strip()
         if not instruction:
             return jsonify({'error': 'tuliskan tujuan audit kode'}), 400
@@ -974,7 +977,8 @@ def create_app() -> Flask:
         try:
             if source_path:
                 run_id = start_code(runner, instruction, None, os.path.basename(source_path),
-                                    model, budgets, source_path=source_path)
+                                    model, budgets, source_path=source_path,
+                                    auto_patch=auto_patch)
             else:
                 run_id = start_code(runner, instruction, archive, filename, model, budgets)
         except ValueError as exc:

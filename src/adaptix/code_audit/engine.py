@@ -14,6 +14,7 @@ import secrets
 import time
 from pathlib import Path
 
+from src.adaptix.code_audit.patcher import apply_patches
 from src.adaptix.code_audit.schema import Report, Turn
 
 MAX_READ_LINES = 200
@@ -22,6 +23,7 @@ RECENT_OBSERVATIONS = 5
 MAX_OUTPUT_TOKENS = 3_000
 INVALID_RESPONSE_LIMIT = 3
 INVALID_REPORT_LIMIT = 2
+TRANSIENT_RETRY_LIMIT = 3
 
 SYSTEM = '''You are ADAPTIX Code Audit, an authorized static source-code reviewer.
 Respond in Indonesian. You inspect only the provided source bundle; you cannot run
@@ -44,6 +46,15 @@ is only model-assessed and would need dynamic confirmation.
 Return exactly one JSON object matching this schema:
 {schema}
 Set action or report, never both. Keep commentary short and operator-facing.
+'''
+
+PATCH_HINT = '''
+The operator enabled auto-patch for this local folder. In the final report you may
+also include `patches`: exact search/replace edits tied to your findings. Each
+`search` must be copied verbatim from a file you read with read_source and must
+occur exactly once in that file; `path` must be one of the catalog paths. Use an
+empty `replace` only to delete code. Patches are applied automatically after the
+report, backed up first, and skipped when the snippet does not match exactly.
 '''
 
 REPORT_MARKDOWN = '''# {title}
@@ -130,8 +141,11 @@ def _provider_call(messages, *, model, api_base, api_key, max_tokens, timeout, c
         kwargs['api_base'] = api_base or os.getenv('ADAPTIX_OLLAMA_BASE_URL',
                                                    'http://127.0.0.1:11434')
         kwargs['num_ctx'] = int(os.getenv('ADAPTIX_MODEL_CONTEXT_TOKENS') or 8192)
-    effort = os.getenv('ADAPTIX_REASONING_EFFORT')
-    if effort:
+    effort = (os.getenv('ADAPTIX_REASONING_EFFORT') or '').strip()
+    # OpenAI-compatible gateways disagree about "none": some accept it, others
+    # reject the whole request as a content-filter failure. Omitting the
+    # parameter is the portable way to ask for no extra reasoning.
+    if effort and effort.lower() not in ('none', 'off', 'disabled', 'false', '0'):
         kwargs['reasoning_effort'] = effort
     try:
         return litellm.completion(**kwargs)
@@ -143,6 +157,23 @@ def _provider_call(messages, *, model, api_base, api_key, max_tokens, timeout, c
             kwargs.pop('reasoning_effort', None)
             return litellm.completion(**kwargs)
         raise
+
+
+def _is_transient_provider_error(exc):
+    text = str(exc).lower()
+    markers = ('429', 'rate limit', 'ratelimit', 'too many requests', 'timeout',
+               'timed out', 'temporarily', 'temporary', 'connection', 'overloaded',
+               '502', '503', '504')
+    return any(marker in text for marker in markers)
+
+
+def _provider_stop_reason(exc):
+    text = str(exc).lower()
+    if '429' in text or 'rate limit' in text or 'ratelimit' in text or 'too many requests' in text:
+        return 'provider_rate_limited'
+    if 'timeout' in text or 'timed out' in text:
+        return 'provider_timeout'
+    return 'provider_unavailable'
 
 
 def _usage(response):
@@ -168,6 +199,34 @@ def _strip_fence(content):
     return re.sub(r'^```(?:json)?\s*|\s*```$', '', text, flags=re.I)
 
 
+def _parse_turn(content):
+    """Parse the first JSON object, ignoring trailing text or extra objects.
+
+    Some gateways append a second object or prose after the decision. The contract
+    is one decision per turn, so decode the first complete object and let the
+    schema validate it.
+    """
+    text = _strip_fence(content)
+    decoder = json.JSONDecoder()
+    index = text.find('{')
+    last_error = None
+    while index != -1:
+        try:
+            value, _ = decoder.raw_decode(text[index:])
+            return Turn.model_validate(value)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            index = text.find('{', index + 1)
+    raise last_error or ValueError('Respons tidak memuat objek JSON.')
+
+
+def _is_provider_refusal(content):
+    text = (content or '').lower()
+    return ('request rejected by ai provider' in text
+            or ('content filter' in text and 'moderation' in text)
+            or ('request rejected' in text and 'provider' in text))
+
+
 def _message_payload(state, bundle):
     files = [{'path': path, 'lines': row['lines'], 'sha256': row['sha256']}
              for path, row in sorted(bundle['files'].items())]
@@ -182,20 +241,34 @@ def _message_payload(state, bundle):
             data['truncated'] = True
         trimmed['data'] = data
         recent.append(trimmed)
-    return {
+    summaries = []
+    for row in observations:
+        summary = {'id': row['id'], 'tool': row['tool'],
+                   'target': row.get('target'), 'sha256': row.get('sha256')}
+        data = row.get('data') or {}
+        if row.get('tool') == 'read_source' and data.get('start_line'):
+            summary['start_line'] = data['start_line']
+            summary['end_line'] = data['start_line'] + max(0, data.get('returned_lines', 0) - 1)
+        summaries.append(summary)
+    remaining_iterations = max(0, state['max_iterations'] - state['iterations'])
+    payload = {
         'objective': state['objective'],
         'source': {'name': bundle.get('name'), 'sha256': bundle.get('sha256'),
                    'files': len(files), 'excluded': bundle.get('excluded', 0)},
         'file_catalog': files,
         'observations': recent,
-        'observation_summaries': [{'id': row['id'], 'tool': row['tool'],
-                                   'target': row.get('target'), 'sha256': row.get('sha256')}
-                                  for row in observations],
+        'observation_summaries': summaries,
         'notes': state.get('notes', ''),
         'feedback': state.get('feedback', ''),
-        'remaining': {'iterations': max(0, state['max_iterations'] - state['iterations']),
+        'remaining': {'iterations': remaining_iterations,
                       'tokens': max(0, state['token_budget'] - state['tokens_used'])},
     }
+    if remaining_iterations <= 3:
+        payload['directive'] = (
+            'Iterasi tersisa sedikit. JANGAN membaca file lagi. Tulis laporan final '
+            'sekarang memakai observasi yang sudah ada; temuan boleh kosong bila bukti '
+            'belum cukup, dan sebutkan keterbatasannya.')
+    return payload
 
 
 def _schema_text():
@@ -231,6 +304,15 @@ def _run_tool(action, bundle, state):
             raise ValueError(f'limit harus 1-{MAX_READ_LINES}.')
         row = files[path]
         lines = row['text'].splitlines()
+        end = start + min(limit, max(0, len(lines) - start + 1)) - 1
+        for prior in state.get('observations') or []:
+            data = prior.get('data') or {}
+            if (prior.get('tool') == 'read_source' and prior.get('target') == path
+                    and data.get('start_line') == start
+                    and data.get('start_line', 0) + max(0, data.get('returned_lines', 0) - 1) >= end):
+                raise ValueError(
+                    f'{path} baris {start}-{end} sudah dibaca pada {prior["id"]}. '
+                    'Jangan ulangi pembacaan identik; pakai observasi itu atau tulis laporan.')
         selected = lines[start - 1:start - 1 + limit]
         text = '\n'.join(selected)[:MAX_READ_BYTES]
         return {'tool': 'read_source', 'target': path, 'sha256': row['sha256'],
@@ -264,13 +346,55 @@ def _finding_markdown(finding):
             + '\n\nBukti: ' + ', '.join(finding['evidence_ids']))
 
 
-def _write_report(run_dir: Path, report, state):
+def _patch_markdown(patches):
+    if not patches or not patches.get('enabled'):
+        return ''
+    rows = ['## Patch otomatis', '',
+            f"Diterapkan: {patches.get('applied_count', 0)} · "
+            f"Dilewati: {patches.get('skipped_count', 0)}"]
+    if patches.get('backup_root'):
+        rows.append(f"Backup folder audit: `{patches['backup_root']}`")
+    if patches.get('backup_error'):
+        rows.append(f"Backup gagal: {patches['backup_error']}")
+    rows.append('')
+    for row in patches.get('applied') or []:
+        line = row.get('line')
+        line_end = row.get('line_end')
+        location = f"baris {line}" if line else 'baris tidak tercatat'
+        if line and line_end and line_end != line:
+            location += f"-{line_end}"
+        rows.append(f"### `{row['path']}` — {location}")
+        rows.append('')
+        if row.get('rationale'):
+            rows.append(row['rationale'])
+            rows.append('')
+        if row.get('before') is not None:
+            rows.append('Sebelum:')
+            rows.append('```')
+            rows.append(str(row.get('before')))
+            rows.append('```')
+            rows.append('')
+        if row.get('after') is not None:
+            rows.append('Sesudah:')
+            rows.append('```')
+            rows.append(str(row.get('after')))
+            rows.append('```')
+            rows.append('')
+    for row in patches.get('skipped') or []:
+        rows.append(f"- `{row['path']}` — skipped: {row.get('reason') or 'unknown'}")
+    return '\n'.join(rows)
+
+
+def _write_report(run_dir: Path, report, state, patches=None):
     markdown = REPORT_MARKDOWN.format(
         title=report['title'], executive_summary=report['executive_summary'],
         methodology=report['methodology'], limitations=report['limitations'],
         next_steps=report['next_steps'],
         findings='\n\n'.join(_finding_markdown(row) for row in report['findings'])
                  or '_Tidak ada temuan yang dapat dibuktikan dari source ini._')
+    patch_text = _patch_markdown(patches)
+    if patch_text:
+        markdown += '\n' + patch_text + '\n'
     record = {
         'status': 'completed',
         'mode': 'code-audit',
@@ -299,6 +423,8 @@ def _write_report(run_dir: Path, report, state):
         'evidence_note': ('Penilaian model dari source statis; bukan verifikasi dinamis. '
                           'Perlu tinjauan operator.'),
     }
+    if patches is not None:
+        record['patches'] = patches
     _write_json(run_dir / 'code-report.json', record)
     md_path = run_dir / 'code-report.md'
     fd = os.open(md_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -311,7 +437,7 @@ def _write_report(run_dir: Path, report, state):
 
 def run_audit(run_dir, instruction, *, model, bundle, time_budget=900,
               token_budget=50000, max_iterations=8, api_base=None, api_key=None,
-              call=None):
+              call=None, auto_patch=False):
     """Run one bounded static audit. Returns the final state and optionally a report."""
     run_dir = Path(run_dir)
     deadline = time.time() + max(1, int(time_budget))
@@ -321,7 +447,10 @@ def run_audit(run_dir, instruction, *, model, bundle, time_budget=900,
         'max_iterations': max(1, int(max_iterations)), 'token_budget': max(1000, int(token_budget)),
         'tokens_used': 0, 'status': 'running', 'node': 'plan', 'stop_reason': None, 'error': '',
     }
-    system = [{'role': 'system', 'content': SYSTEM.replace('{schema}', _schema_text())}]
+    system_text = SYSTEM.replace('{schema}', _schema_text())
+    if auto_patch:
+        system_text += PATCH_HINT
+    system = [{'role': 'system', 'content': system_text}]
     invalid_responses = 0
     invalid_reports = 0
     _progress(run_dir, state)
@@ -349,12 +478,33 @@ def run_audit(run_dir, instruction, *, model, bundle, time_budget=900,
         state['iterations'] += 1
         state['node'] = 'decide'
         _progress(run_dir, state)
-        try:
-            response = _provider_call(messages, model=model, api_base=api_base, api_key=api_key,
-                                      max_tokens=output_tokens,
-                                      timeout=min(180, max(1, deadline - time.time())), call=call)
-        except Exception as exc:
-            state.update(status='completed_with_errors', stop_reason='provider_unavailable',
+        response = None
+        provider_error = None
+        for attempt in range(1, TRANSIENT_RETRY_LIMIT + 2):
+            try:
+                response = _provider_call(
+                    messages, model=model, api_base=api_base, api_key=api_key,
+                    max_tokens=output_tokens,
+                    timeout=min(180, max(1, deadline - time.time())), call=call)
+                break
+            except Exception as exc:
+                provider_error = exc
+                if attempt > TRANSIENT_RETRY_LIMIT or not _is_transient_provider_error(exc):
+                    break
+                base = float(os.getenv('ADAPTIX_PROVIDER_RETRY_DELAY', '2'))
+                delay = min(base * (2 ** (attempt - 1)), max(0.0, deadline - time.time() - 1))
+                if delay <= 0:
+                    break
+                state['error'] = (f'Percobaan {attempt}/{TRANSIENT_RETRY_LIMIT + 1} gagal '
+                                  f'({type(exc).__name__}); mencoba ulang.')
+                _progress(run_dir, state)
+                _activity(run_dir, 'audit', state['source_name'], 'retrying',
+                          f'{type(exc).__name__}: {exc}'[:200])
+                time.sleep(delay)
+        if response is None:
+            exc = provider_error or RuntimeError('provider returned no response')
+            state.update(status='completed_with_errors',
+                         stop_reason=_provider_stop_reason(exc),
                          error=f'{type(exc).__name__}: {exc}'[:500])
             break
         usage = _usage(response) or {}
@@ -362,17 +512,36 @@ def run_audit(run_dir, instruction, *, model, bundle, time_budget=900,
         if not isinstance(charged, int) or charged <= 0:
             charged = estimate + output_tokens
         state['tokens_used'] += charged
+        raw_content = _content(response) or ''
+        if _is_provider_refusal(raw_content):
+            state.update(status='completed_with_errors', stop_reason='provider_rejected',
+                         error=raw_content[:800].replace('\n', ' '))
+            _activity(run_dir, 'model', '', 'provider_rejected',
+                      'provider menolak request (content filter/moderation)')
+            break
         try:
-            turn = Turn.model_validate_json(_strip_fence(_content(response)))
+            turn = _parse_turn(raw_content)
         except Exception as exc:
             invalid_responses += 1
-            state['feedback'] = ('Respons tidak sesuai schema JSON. Kembalikan tepat satu objek '
-                                 'dengan commentary + action atau commentary + report.')
+            detail = str(exc).replace('\n', ' ')[:800]
+            try:
+                _append(run_dir / 'code-model-errors.ndjson', {
+                    'created_at': _now(),
+                    'iteration': state['iterations'],
+                    'error': f'{type(exc).__name__}: {detail}',
+                    'content': raw_content[:16000],
+                })
+            except (OSError, UnboundLocalError):
+                pass
+            state['feedback'] = (
+                'Respons tidak sesuai schema JSON. Kembalikan tepat satu objek dengan '
+                'commentary + action ATAU commentary + report. Detail validator: ' + detail)
             _activity(run_dir, 'model', '', 'invalid',
-                      f'schema ditolak: {type(exc).__name__}')
+                      f'schema ditolak: {type(exc).__name__}: {detail[:300]}')
             if invalid_responses >= INVALID_RESPONSE_LIMIT:
                 state.update(status='completed_with_errors', stop_reason='model_schema_failed',
-                             error='Model tidak menghasilkan keputusan JSON yang valid.')
+                             error=('Model tidak menghasilkan keputusan JSON yang valid. '
+                                    f'Error terakhir: {detail}')[:1200])
                 break
             continue
         invalid_responses = 0
@@ -410,7 +579,24 @@ def run_audit(run_dir, instruction, *, model, bundle, time_budget=900,
                                  error='Laporan model mengutip bukti yang tidak tercatat.')
                     break
                 continue
-            record = _write_report(run_dir, report, state)
+            patch_outcome = None
+            if auto_patch:
+                if bundle.get('source_kind') == 'folder' and bundle.get('source_path'):
+                    state['node'] = 'patch'
+                    _progress(run_dir, state)
+                    patch_outcome = apply_patches(
+                        bundle['source_path'], report.get('patches') or [],
+                        run_dir=run_dir, files=list(bundle.get('files') or {}))
+                    state['patches'] = patch_outcome
+                    _activity(run_dir, 'patch', str(patch_outcome.get('root') or ''),
+                              'applied' if patch_outcome.get('applied_count') else 'skipped',
+                              f"{patch_outcome.get('applied_count', 0)} diterapkan, "
+                              f"{patch_outcome.get('skipped_count', 0)} dilewati")
+                else:
+                    patch_outcome = {'enabled': False,
+                                     'error': 'Auto-patch hanya tersedia untuk folder lokal.'}
+                    state['patches'] = patch_outcome
+            record = _write_report(run_dir, report, state, patches=patch_outcome)
             state.update(report=record, status='completed', stop_reason='model_reported',
                          error='', node='done')
             _activity(run_dir, 'report', record['title'], 'completed',

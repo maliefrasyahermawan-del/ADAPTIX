@@ -200,6 +200,8 @@
               <label id="b-code-folder-row" class="hidden">folder lokal (path di mesin ini)
                 <input id="b-code-path" type="text" placeholder="/home/user/project atau ./src">
               </label>
+              <label id="b-code-patch-row" class="check-label hidden"><input id="b-code-autopatch" type="checkbox">
+                Terapkan patch otomatis ke folder setelah audit</label>
               <label>model audit
                 <select id="b-code-model">
                   <option value="">(dari .env)</option>
@@ -209,8 +211,9 @@
                 <input id="b-code-iterations" type="text" value="8">
               </label>
               <div class="code-note">ZIP maks 4 MB, atau folder lokal di mesin ADAPTIX (maks 300 file teks,
-                masing-masing 200 KB). Source dibaca read-only, tidak dieksekusi, tidak diinstal,
-                dan tidak dikirim ke jaringan selain provider model.</div>
+                masing-masing 200 KB).                 Source dibaca read-only dan tidak dieksekusi. Patch otomatis (opsional) membuat
+                backup seluruh folder yang diaudit di folder induknya sebelum menulis, lalu diff
+                disimpan di artifacts run; snippet yang tidak cocok persis akan dilewati.</div>
             </div>
             <div id="opencode-options" class="opencode-options hidden">
               <label>opencode model

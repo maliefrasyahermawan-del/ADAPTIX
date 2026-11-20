@@ -105,3 +105,14 @@ def test_directory_bundle_skips_symlinks(tmp_path):
     (source / 'app.py').write_text('print(1)', encoding='utf-8')
     (source / 'link.py').symlink_to(source / 'app.py')
     assert set(directory_bundle(source)['files']) == {'app.py'}
+
+
+def test_directory_bundle_skips_adaptix_backup_folders(tmp_path):
+    from src.adaptix.code_audit.sources import directory_bundle
+    source = tmp_path / 'project'
+    source.mkdir()
+    (source / 'app.py').write_text('print(1)', encoding='utf-8')
+    backup = source / 'project_backup_20261120-115547'
+    backup.mkdir()
+    (backup / 'app.py').write_text('print(0)', encoding='utf-8')
+    assert set(directory_bundle(source)['files']) == {'app.py'}

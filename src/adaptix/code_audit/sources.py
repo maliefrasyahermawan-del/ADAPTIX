@@ -29,6 +29,7 @@ EXTENSIONS = {
     '.xml', '.vue', '.svelte',
 }
 PRIVATE = {'.git', '.env', '.ssh', 'node_modules', '__pycache__', '.venv', 'venv'}
+_GENERATED_BACKUP = re.compile(r'^.+_backup_\d{8}-\d{6}(?:-\d+)?$')
 _NAMED_SECRET = re.compile(
     r'''(?im)(\b(?:password|passwd|api[_-]?key|access[_-]?token|client[_-]?secret|secret[_-]?key)\b\s*[:=]\s*)(["'])([^\r\n]*?)(\2)'''
 )
@@ -69,6 +70,7 @@ def unpack(raw: bytes) -> dict:
                 if item.is_dir():
                     continue
                 if (any(part in PRIVATE for part in path.parts)
+                        or any(_GENERATED_BACKUP.match(part) for part in path.parts)
                         or path.name.startswith('.env')
                         or path.suffix.lower() not in EXTENSIONS):
                     excluded += 1
@@ -136,7 +138,8 @@ def directory_bundle(source_dir, *, name=None) -> dict:
     total = 0
     excluded = 0
     for dirpath, dirnames, filenames in os.walk(source, followlinks=False):
-        dirnames[:] = sorted(part for part in dirnames if part not in PRIVATE)
+        dirnames[:] = sorted(part for part in dirnames
+                             if part not in PRIVATE and not _GENERATED_BACKUP.match(part))
         for filename in sorted(filenames):
             path = Path(dirpath) / filename
             relative = path.relative_to(source)
@@ -203,6 +206,8 @@ def _persist_bundle(run_dir: Path, bundle: dict, name: str, *, kind: str,
         path.chmod(0o600)
     except OSError:
         pass
+    bundle['source_kind'] = kind
+    bundle['source_path'] = source_path
     return bundle
 
 

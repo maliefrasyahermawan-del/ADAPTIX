@@ -90,6 +90,7 @@ function syncCodeSource() {
   const folder = codeSourceKind() === 'folder';
   $('b-code-zip-row').classList.toggle('hidden', folder);
   $('b-code-folder-row').classList.toggle('hidden', !folder);
+  $('b-code-patch-row').classList.toggle('hidden', !folder);
 }
 
 $('b-engine').addEventListener('change', syncEngine);
@@ -1074,6 +1075,35 @@ function renderCodeAudit(view) {
       ${d.impact ? `<div class="finding-text"><b>dampak</b> ${esc(d.impact)}</div>` : ''}
       ${d.mitigation ? `<div class="finding-text"><b>perbaikan</b> ${esc(d.mitigation)}</div>` : ''}
     </div>`).join('') : '<div class="empty-sub">Belum ada temuan yang dapat dibuktikan.</div>';
+  const patches = report.patches || {};
+  const patchApplied = patches.applied || [];
+  const patchSkipped = patches.skipped || [];
+  const patchLine = (p) => p.line
+    ? `baris ${p.line}${p.line_end && p.line_end !== p.line ? '-' + p.line_end : ''}`
+    : 'baris tidak tercatat';
+  const patchHtml = (patches.enabled !== undefined || patchApplied.length || patchSkipped.length) ? `
+    <div class="dash-card">
+      <div class="dash-card-title">Patch otomatis</div>
+      <div class="dash-card-sub">${patches.enabled === false
+        ? esc(patches.error || 'Auto-patch tidak aktif.')
+        : `Diterapkan ${patches.applied_count || 0} · dilewati ${patches.skipped_count || 0}${patches.backup_root ? ` · backup ${esc(patches.backup_root)}` : ''}`}</div>
+      ${patchApplied.map((p) => {
+        const before = p.before !== undefined ? p.before : p.search;
+        const after = p.after !== undefined ? p.after : p.replace;
+        return `<div class="patch-card">
+          <div class="patch-head"><span class="pill">applied</span><code>${esc(p.path)}</code><span class="pill">${patchLine(p)}</span></div>
+          ${p.rationale ? `<div class="finding-text"><b>alasan</b> ${esc(p.rationale)}</div>` : ''}
+          ${before !== undefined ? `<div class="patch-grid">
+            <div><div class="patch-label">sebelum</div><pre class="patch-code">${esc(before)}</pre></div>
+            <div><div class="patch-label">sesudah</div><pre class="patch-code">${esc(after !== undefined ? after : '')}</pre></div>
+          </div>` : '<div class="empty-sub">Detail baris/snippet belum tersedia untuk run lama.</div>'}
+        </div>`;
+      }).join('')}
+      ${patchSkipped.map((p) => `<div class="patch-card">
+        <div class="patch-head"><span class="pill">skipped</span><code>${esc(p.path)}</code></div>
+        <div class="finding-text">${esc(p.reason || 'tidak diterapkan')}</div>
+      </div>`).join('')}
+    </div>` : '';
   $('ff-content').innerHTML = `
     <div class="flow-detail-cards">
       <div class="card"><div class="label">Source</div><div class="value" style="font-size:14px">${esc(source.name || view.target[0] || '-')}</div><div class="sub">${source.files || 0} file teks · ${source.excluded || 0} dikecualikan</div></div>
@@ -1092,6 +1122,7 @@ function renderCodeAudit(view) {
       <div class="dash-card-sub">Setiap finding wajib mengutip observation read_source yang tercatat.</div>
       <div class="findings-list">${findingHtml}</div>
     </div>
+    ${patchHtml}
     ${view.log && view.log.length ? `<div class="dash-card"><div class="dash-card-title">Worker log</div>
       <div class="log-view">${view.log.slice(-40).map((l) => `<div class="log-line">${esc(l)}</div>`).join('')}</div></div>` : ''}`;
 }
@@ -1289,9 +1320,14 @@ $('start-btn').addEventListener('click', async () => {
       alert('isi path folder source code dulu'); return;
     }
     if (!goal) { alert('tuliskan tujuan audit kode'); return; }
+    const autoPatch = kind === 'folder' && $('b-code-autopatch').checked;
+    if (autoPatch && !confirm('Patch otomatis akan MENGUBAH file di:\n' + sourcePath +
+        '\n\nSeluruh folder yang diaudit dicadangkan lebih dulu di folder induknya, ' +
+        'lalu diff disimpan di artifacts run. Lanjutkan?')) return;
     const form = new FormData();
     if (kind === 'zip') form.append('file', file);
     else form.append('source_path', sourcePath);
+    if (autoPatch) form.append('auto_patch', '1');
     form.append('instruction', goal);
     form.append('model', $('b-code-model').value.trim());
     form.append('time_budget', $('b-time').value.trim() || '900');

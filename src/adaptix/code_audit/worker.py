@@ -27,6 +27,7 @@ def parse_args(argv=None):
     parser.add_argument('--time-budget', type=int, default=900)
     parser.add_argument('--token-budget', type=int, default=50000)
     parser.add_argument('--max-iterations', type=int, default=8)
+    parser.add_argument('--auto-patch', action='store_true')
     parser.add_argument('--api-base', default=None)
     parser.add_argument('--api-key', default=None)
     return parser.parse_args(argv)
@@ -42,6 +43,7 @@ def main(argv=None):
             run_dir, args.instruction, model=args.model, bundle=bundle,
             time_budget=args.time_budget, token_budget=args.token_budget,
             max_iterations=args.max_iterations,
+            auto_patch=args.auto_patch,
             api_base=args.api_base or os.getenv('ADAPTIX_API_BASE') or None,
             api_key=args.api_key or os.getenv('ADAPTIX_API_KEY') or None,
         )
