@@ -56,6 +56,9 @@ class Runner:
     cannot corrupt the run, and the artifacts it writes are the shared state.
     """
 
+    _interpreter_lock = threading.Lock()
+    _interpreter_path = ''
+
     def __init__(self, view: LiveView):
         self.view = view
         self.process: subprocess.Popen | None = None
@@ -79,22 +82,41 @@ class Runner:
         ``sys.executable`` is only correct when the screen was started by the venv
         python. Started as ``/usr/bin/python -m src.adaptix.ui_entry`` it points at the
         system interpreter, and every run then dies on a missing ``litellm``. Prefer the
-        venv beside the project root, and prove it can import the stack before using it.
+        venv beside the project root, and prove the full import works before using it.
+
+        Importing litellm costs ~7s, so the probe result is cached for the life of the
+        process and the web server warms it in the background at startup. The probe must
+        stay a real import: ``find_spec`` only proves a path exists and would accept a
+        module whose transitive imports are broken.
         """
-        candidates = [sys.executable]
-        for name in ('.venv/bin/python', 'venv/bin/python', '.venv/Scripts/python.exe'):
-            candidates.append(os.path.abspath(name))
-        for candidate in candidates:
-            if not candidate or not os.path.exists(candidate):
-                continue
+        with Runner._interpreter_lock:
+            if Runner._interpreter_path:
+                return Runner._interpreter_path
+            candidates = [sys.executable]
+            for name in ('.venv/bin/python', 'venv/bin/python', '.venv/Scripts/python.exe'):
+                candidates.append(os.path.abspath(name))
+            for candidate in candidates:
+                if not candidate or not os.path.exists(candidate):
+                    continue
+                try:
+                    probe = subprocess.run([candidate, '-c', 'import litellm, langgraph'],
+                                           capture_output=True, timeout=60, cwd=os.getcwd())
+                except (OSError, subprocess.SubprocessError):
+                    continue
+                if probe.returncode == 0:
+                    Runner._interpreter_path = candidate
+                    return candidate
+            return sys.executable
+
+    @staticmethod
+    def warm_interpreter():
+        """Resolve the interpreter off the request thread while the operator reads the UI."""
+        def probe():
             try:
-                probe = subprocess.run([candidate, '-c', 'import litellm, langgraph'],
-                                       capture_output=True, timeout=60, cwd=os.getcwd())
-            except (OSError, subprocess.SubprocessError):
-                continue
-            if probe.returncode == 0:
-                return candidate
-        return sys.executable
+                Runner.interpreter()
+            except Exception:
+                pass
+        threading.Thread(target=probe, daemon=True, name='adaptix-interpreter-probe').start()
 
     def command(self, instruction: str) -> list[str]:
         view = self.view

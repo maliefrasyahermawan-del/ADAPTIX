@@ -167,6 +167,39 @@ def test_scanner_match_is_labelled_apart_from_verified_findings():
     assert '[scanner match, belum diverifikasi]' in rendered
 
 
+def test_interpreter_probe_runs_once_and_is_cached(monkeypatch):
+    calls = []
+
+    class Probe:
+        returncode = 0
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return Probe()
+
+    monkeypatch.setattr('src.adaptix.ui.runner.subprocess.run', fake_run)
+    monkeypatch.setattr(S.Runner, '_interpreter_path', '')
+    first = S.Runner.interpreter()
+    second = S.Runner.interpreter()
+    assert first == second
+    assert len(calls) == 1
+    # The probe stays a real import: find_spec would accept broken transitive deps.
+    assert calls[0][2] == 'import litellm, langgraph'
+
+
+def test_warm_interpreter_resolves_in_background(monkeypatch):
+    import threading
+    done = threading.Event()
+
+    def fake_interpreter():
+        done.set()
+        return 'python'
+
+    monkeypatch.setattr(S.Runner, 'interpreter', staticmethod(fake_interpreter))
+    S.Runner.warm_interpreter()
+    assert done.wait(2), 'warm probe did not run'
+
+
 def test_runner_reads_progress_and_final_report_artifacts(tmp_path):
     import json
     from pathlib import Path

@@ -1090,12 +1090,21 @@ function renderCodeAudit(view) {
       ${patchApplied.map((p) => {
         const before = p.before !== undefined ? p.before : p.search;
         const after = p.after !== undefined ? p.after : p.replace;
+        const hasDetail = before !== undefined || after !== undefined;
+        const side = (label, value, emptyText) => {
+          const text = value == null ? '' : String(value);
+          return `<div><div class="patch-label">${label}</div>${text.trim()
+            ? `<pre class="patch-code">${esc(text)}</pre>`
+            : `<div class="patch-empty">${emptyText}</div>`}</div>`;
+        };
         return `<div class="patch-card">
-          <div class="patch-head"><span class="pill">applied</span><code>${esc(p.path)}</code><span class="pill">${patchLine(p)}</span></div>
+          <div class="patch-head"><span class="pill">applied</span><code>${esc(p.path)}</code><span class="pill">${patchLine(p)}</span>${after === '' ? '<span class="pill">hapus</span>' : ''}</div>
           ${p.rationale ? `<div class="finding-text"><b>alasan</b> ${esc(p.rationale)}</div>` : ''}
-          ${before !== undefined ? `<div class="patch-grid">
-            <div><div class="patch-label">sebelum</div><pre class="patch-code">${esc(before)}</pre></div>
-            <div><div class="patch-label">sesudah</div><pre class="patch-code">${esc(after !== undefined ? after : '')}</pre></div>
+          ${hasDetail ? `<div class="patch-grid">
+            ${side('sebelum', before, 'baris baru / tidak ada kode sebelumnya')}
+            ${after !== undefined
+              ? side('sesudah', after, 'baris dihapus (tidak ada pengganti)')
+              : side('sesudah', undefined, 'tidak ada data pengganti (run lama)')}
           </div>` : '<div class="empty-sub">Detail baris/snippet belum tersedia untuk run lama.</div>'}
         </div>`;
       }).join('')}

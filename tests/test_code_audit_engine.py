@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.adaptix.code_audit.engine import run_audit
+from src.adaptix.code_audit.engine import _message_payload, run_audit
 from src.adaptix.code_audit.schema import Action
 from src.adaptix.code_audit.sources import write_bundle
 
@@ -281,6 +281,101 @@ def test_duplicate_read_is_blocked_and_model_can_finish(tmp_path):
                       token_budget=50000, max_iterations=6, call=call)
     assert state['status'] == 'completed'
     assert len(state['observations']) == 1
+
+
+def _zip_with(path, text):
+    import io
+    import zipfile
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w') as archive:
+        archive.writestr(path, text)
+    return buffer.getvalue()
+
+
+def test_overlapping_read_already_covered_is_blocked(tmp_path):
+    run_dir = tmp_path / 'run'
+    bundle = write_bundle(run_dir, _zip_with('big.py', '\n'.join(
+        f'line_{i} = {i}' for i in range(1, 301))), 'big.zip')
+    calls = {'n': 0}
+
+    def call(**kwargs):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            return _response(json.dumps({
+                'commentary': 'Baca awal file.',
+                'action': {'tool': 'read_source', 'arguments': {
+                    'path': 'big.py', 'start_line': 1, 'limit': 200}}}))
+        if calls['n'] == 2:
+            return _response(json.dumps({
+                'commentary': 'Baca ulang sebagian.',
+                'action': {'tool': 'read_source', 'arguments': {
+                    'path': 'big.py', 'start_line': 50, 'limit': 100}}}))
+        payload = json.loads(kwargs['messages'][-1]['content'])
+        assert 'sudah dibaca' in payload['feedback']
+        assert 'tercakup' in payload['feedback']
+        return _response(json.dumps({
+            'commentary': 'Bukti cukup.',
+            'report': {'title': 'Audit', 'executive_summary': 'x', 'methodology': 'y',
+                       'findings': [], 'limitations': 'z', 'next_steps': 'z'}}))
+
+    state = run_audit(run_dir, 'Cari', model='fake/model', bundle=bundle,
+                      token_budget=50000, max_iterations=6, call=call)
+    assert state['status'] == 'completed'
+    assert len(state['observations']) == 1
+
+
+def test_partially_new_read_range_is_allowed(tmp_path):
+    run_dir = tmp_path / 'run'
+    bundle = write_bundle(run_dir, _zip_with('big.py', '\n'.join(
+        f'line_{i} = {i}' for i in range(1, 301))), 'big.zip')
+    calls = {'n': 0}
+
+    def call(**kwargs):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            return _response(json.dumps({
+                'commentary': 'Baca awal file.',
+                'action': {'tool': 'read_source', 'arguments': {
+                    'path': 'big.py', 'start_line': 1, 'limit': 100}}}))
+        if calls['n'] == 2:
+            return _response(json.dumps({
+                'commentary': 'Lanjutkan ke baris baru.',
+                'action': {'tool': 'read_source', 'arguments': {
+                    'path': 'big.py', 'start_line': 50, 'limit': 100}}}))
+        return _response(json.dumps({
+            'commentary': 'Bukti cukup.',
+            'report': {'title': 'Audit', 'executive_summary': 'x', 'methodology': 'y',
+                       'findings': [], 'limitations': 'z', 'next_steps': 'z'}}))
+
+    state = run_audit(run_dir, 'Cari', model='fake/model', bundle=bundle,
+                      token_budget=50000, max_iterations=6, call=call)
+    assert state['status'] == 'completed'
+    assert len(state['observations']) == 2
+
+
+def test_payload_keeps_content_excerpt_for_older_observations():
+    content = 'A' * 4000
+    observations = [{
+        'id': f'obs-{index}', 'tool': 'read_source', 'target': 'app.py',
+        'sha256': 'abc', 'data': {
+            'start_line': index * 10 + 1, 'returned_lines': 10, 'content': content}}
+        for index in range(7)]
+    state = {'objective': 'Cari', 'observations': observations, 'max_iterations': 12,
+             'iterations': 7, 'token_budget': 50000, 'tokens_used': 0,
+             'notes': '', 'feedback': ''}
+    payload = _message_payload(state, {
+        'name': 'app.zip', 'excluded': 0,
+        'files': {'app.py': {'lines': 70, 'sha256': 'abc'}}})
+
+    assert len(payload['observations']) == 7
+    older = payload['observations'][0]['data']
+    assert older['content_excerpt'] is True
+    assert older['truncated'] is True
+    assert 'karakter tengah tidak ditampilkan' in older['content']
+    assert len(older['content']) < len(content)
+    recent = payload['observations'][-1]['data']
+    assert recent['content'] == content
+    assert 'content_excerpt' not in recent
 
 
 def test_low_iteration_budget_directs_model_to_report(tmp_path):

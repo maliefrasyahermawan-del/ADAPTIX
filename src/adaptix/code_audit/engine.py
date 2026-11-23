@@ -20,6 +20,8 @@ from src.adaptix.code_audit.schema import Report, Turn
 MAX_READ_LINES = 200
 MAX_READ_BYTES = 14_000
 RECENT_OBSERVATIONS = 5
+EXCERPT_HEAD = 1_200
+EXCERPT_TAIL = 400
 MAX_OUTPUT_TOKENS = 3_000
 INVALID_RESPONSE_LIMIT = 3
 INVALID_REPORT_LIMIT = 2
@@ -39,6 +41,9 @@ Available tools:
 Every read_source observation has an id like obs-xxxxxxxxxxxx. A finding MUST cite
 one or more of those ids in evidence_ids. A list_source observation is a file list,
 not proof of a vulnerability, so it cannot be cited as evidence.
+Older read_source observations keep a compact head/tail excerpt; every line you
+already read is marked covered and cannot be read again. Read only ranges that are
+not yet covered, and write the report when the evidence you have is sufficient.
 Findings describe static risks with severity (critical/high/medium/low/info), the
 affected lines, impact, remediation and CWE when known. Say plainly when a claim
 is only model-assessed and would need dynamic confirmation.
@@ -227,16 +232,33 @@ def _is_provider_refusal(content):
             or ('request rejected' in text and 'provider' in text))
 
 
+def _excerpt(text):
+    """Compact head/tail view of an older observation so every read stays visible."""
+    if len(text) <= EXCERPT_HEAD + EXCERPT_TAIL:
+        return text
+    omitted = len(text) - EXCERPT_HEAD - EXCERPT_TAIL
+    return (text[:EXCERPT_HEAD]
+            + f'\n... [{omitted} karakter tengah tidak ditampilkan; baca range baru '
+              'hanya bila baris itu belum tercakup] ...\n'
+            + text[-EXCERPT_TAIL:])
+
+
 def _message_payload(state, bundle):
     files = [{'path': path, 'lines': row['lines'], 'sha256': row['sha256']}
              for path, row in sorted(bundle['files'].items())]
     observations = state.get('observations') or []
+    recent_start = max(0, len(observations) - RECENT_OBSERVATIONS)
     recent = []
-    for row in observations[-RECENT_OBSERVATIONS:]:
+    for index, row in enumerate(observations):
         trimmed = dict(row)
         data = dict(trimmed.get('data') or {})
         content = data.get('content')
-        if isinstance(content, str) and len(content) > 7000:
+        if (row.get('tool') == 'read_source' and isinstance(content, str)
+                and index < recent_start):
+            data['content'] = _excerpt(content)
+            data['content_excerpt'] = True
+            data['truncated'] = True
+        elif isinstance(content, str) and len(content) > 7000:
             data['content'] = content[:7000] + '\n... [dipotong]'
             data['truncated'] = True
         trimmed['data'] = data
@@ -279,6 +301,30 @@ def _source_files(bundle):
     return bundle.get('files') or {}
 
 
+def _range_is_covered(ranges, start, end):
+    """True when every line in start..end is already covered by prior reads."""
+    cursor = start
+    for low, high in sorted(ranges):
+        if high < cursor:
+            continue
+        if low > cursor:
+            return False
+        if high >= end:
+            return True
+        cursor = high + 1
+    return cursor > end
+
+
+def _remember_range(ranges, start, end):
+    merged = []
+    for low, high in sorted(ranges + [[start, end]]):
+        if merged and low <= merged[-1][1] + 1:
+            merged[-1][1] = max(merged[-1][1], high)
+        else:
+            merged.append([low, high])
+    return merged
+
+
 def _run_tool(action, bundle, state):
     files = _source_files(bundle)
     arguments = action.arguments or {}
@@ -305,16 +351,21 @@ def _run_tool(action, bundle, state):
         row = files[path]
         lines = row['text'].splitlines()
         end = start + min(limit, max(0, len(lines) - start + 1)) - 1
-        for prior in state.get('observations') or []:
-            data = prior.get('data') or {}
-            if (prior.get('tool') == 'read_source' and prior.get('target') == path
-                    and data.get('start_line') == start
-                    and data.get('start_line', 0) + max(0, data.get('returned_lines', 0) - 1) >= end):
-                raise ValueError(
-                    f'{path} baris {start}-{end} sudah dibaca pada {prior["id"]}. '
-                    'Jangan ulangi pembacaan identik; pakai observasi itu atau tulis laporan.')
+        ranges = (state.setdefault('read_ranges', {})).get(path) or []
+        if end >= start and _range_is_covered(ranges, start, end):
+            prior_id = next((prior['id'] for prior in state.get('observations') or []
+                             if prior.get('tool') == 'read_source'
+                             and prior.get('target') == path
+                             and prior.get('data', {}).get('start_line') == start),
+                            'observasi sebelumnya')
+            raise ValueError(
+                f'{path} baris {start}-{end} sudah dibaca pada {prior_id}. '
+                'Jangan ulangi pembacaan yang sudah tercakup; pakai observasi itu, '
+                'baca range yang belum tercakup, atau tulis laporan.')
         selected = lines[start - 1:start - 1 + limit]
         text = '\n'.join(selected)[:MAX_READ_BYTES]
+        if selected:
+            state['read_ranges'][path] = _remember_range(ranges, start, end)
         return {'tool': 'read_source', 'target': path, 'sha256': row['sha256'],
                 'data': {'start_line': start, 'returned_lines': len(selected),
                          'total_lines': len(lines), 'content': text,

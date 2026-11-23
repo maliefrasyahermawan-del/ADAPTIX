@@ -354,6 +354,10 @@ def main(cwd: str | None = None) -> int:
         print('adaptix ui needs an interactive terminal (a real TTY).')
         return 2
     os.environ.setdefault('ESCDELAY', '25')
+    # Resolve the worker interpreter while the operator reads the first screen so the
+    # first Start press does not wait on the ~7s litellm import probe.
+    from src.adaptix.ui.runner import Runner
+    Runner.warm_interpreter()
     try:
         curses.wrapper(_run_screen, cwd)
     except KeyboardInterrupt:

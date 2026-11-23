@@ -349,11 +349,22 @@ def _flow_title_for(run_id, fallback):
 
 
 def _run_ids():
+    base = os.path.join(CWD, 'artifacts', 'scans')
     try:
-        return sorted((n for n in os.listdir(os.path.join(CWD, 'artifacts', 'scans'))
-                       if not n.startswith('.')), reverse=True)
+        names = [name for name in os.listdir(base) if not name.startswith('.')]
     except OSError:
         return []
+
+    def recency(name):
+        try:
+            return (os.path.getctime(os.path.join(base, name)), name)
+        except OSError:
+            return (0, name)
+
+    # Run IDs are wall-clock-only (code-105202), so lexicographic order puts
+    # yesterday's afternoon runs above today's morning runs. Sort by creation
+    # time instead so "Recent flows" and the flows table show the latest runs.
+    return sorted(names, key=recency, reverse=True)
 
 
 def _opencode_workspace(run_id):
@@ -1175,6 +1186,9 @@ def create_app() -> Flask:
 
 def main(host='127.0.0.1', port=8420):
     app = create_app()
+    # Resolve the worker interpreter now (real import probe, ~7s) so the operator's
+    # first Start press does not pay for it on the request thread.
+    Runner.warm_interpreter()
     print(f'ADAPTIX web UI: http://{host}:{port}')
     app.run(host=host, port=port, debug=False, threaded=True)
 
