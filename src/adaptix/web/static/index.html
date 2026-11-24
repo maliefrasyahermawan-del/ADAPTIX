@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ADAPTIX</title>
+<link rel="icon" type="image/png" href="/static/logo.png">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -11,7 +12,7 @@
   <aside class="sidebar" id="sidebar">
     <div id="sidebar-main" class="sidebar-mode">
       <div class="brand" id="brand-btn">
-        <div class="brand-icon" data-icon="network"></div>
+        <div class="brand-icon"><img src="/static/logo.png" alt="ADAPTIX"></div>
         <div class="brand-text">
           <div class="brand-name">ADAPTIX</div>
           <div class="brand-ver" id="brand-ver">adaptive pentest agent</div>
@@ -161,14 +162,15 @@
       <div id="flows-table-view" class="flows-table-view hidden">
         <div class="flows-table-header">
           <input id="flows-filter" type="text" placeholder="Filter flows...">
+          <div class="menu-wrap">
+            <button id="flows-menu-btn" class="icon-btn" type="button" title="Kelompokkan flows" aria-label="Kelompokkan flows">
+              <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M7 12h10M10 17h4"/></svg>
+            </button>
+            <div id="flows-menu" class="menu-pop hidden"></div>
+          </div>
           <button id="new-flow-btn" class="btn-primary">+ New Flow</button>
         </div>
-        <div class="flows-table-wrap">
-          <table class="flows-table">
-            <thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Provider</th><th>Target</th><th>Created</th></tr></thead>
-            <tbody id="flows-table-body"></tbody>
-          </table>
-        </div>
+        <div class="tl-list" id="flows-timeline"></div>
       </div>
 
       <div id="new-flow-view" class="new-flow-card">

@@ -656,30 +656,155 @@ async function loadFlows() {
   if (selectedFlow && !$('flow-fullpage').classList.contains('hidden')) refreshFlowDetail();
 }
 
+const TL_ICON = {
+  bot: '<svg viewBox="0 0 24 24"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M9 13h.01M15 13h.01"/></svg>',
+  warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 4 2.8 20h18.4L12 4z"/><path d="M12 10v4M12 17h.01"/></svg>',
+};
+// ---- Flows history: grouped by date, status priority or custom group -------
+const GROUP_MODES = [['date', 'Tanggal'], ['status', 'Status prioritas'], ['custom', 'Grup kustom']];
+let flowsGroupMode = 'date';
+try { flowsGroupMode = localStorage.getItem('adaptix.flowsGroup') || 'date'; } catch (e) { /* storage unavailable */ }
+if (!GROUP_MODES.some((m) => m[0] === flowsGroupMode)) flowsGroupMode = 'date';
+const collapsedGroups = new Set();
+let lastFlowsList = [];
+
+function flowBucket(f) {
+  if (flowsGroupMode === 'status') {
+    const st = String(f.status || '').toLowerCase();
+    if (f.live) return { order: 0, label: 'Berjalan' };
+    if (/fail|error|stop|cancel/.test(st)) return { order: 1, label: 'Perlu perhatian' };
+    if (st.startsWith('completed')) return { order: 2, label: 'Selesai' };
+    return { order: 3, label: 'Lainnya' };
+  }
+  if (flowsGroupMode === 'custom') return f.group ? { order: 0, label: f.group } : { order: 1, label: 'Tanpa grup' };
+  if (!f.started_at) return { order: 1e15, label: 'Tanggal tidak diketahui' };
+  const d = new Date(f.started_at * 1000);
+  const day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const now = new Date();
+  const diff = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - day) / 86400000);
+  const label = diff === 0 ? 'Hari ini' : diff === 1 ? 'Kemarin'
+    : day.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: day.getFullYear() === now.getFullYear() ? undefined : 'numeric' });
+  return { order: -day.getTime(), label };
+}
+
+function flowCardHtml(f) {
+  const provider = (f.model || '').split('/')[0] || '-';
+  const created = f.started_at ? new Date(f.started_at * 1000).toLocaleString() : '-';
+  const st = String(f.status || '');
+  const cls = f.live ? 'running' : (/fail|error/.test(st) ? 'failed' : (st.startsWith('completed') ? 'done' : ''));
+  const name = f.title || (f.objective ? f.objective.slice(0, 60) : (f.target[0] || 'untitled'));
+  return `<div class="tl-item ${cls === 'running' ? 'running' : (cls === 'done' ? 'done' : '')}">
+    <div class="tl-card clickable" data-run="${esc(f.run_id)}">
+      <div class="tl-ico">${TL_ICON.bot}</div>
+      <div class="tl-main"><div class="tl-name">${f.favorite ? '★ ' : ''}${esc(name)}</div>
+        <div class="tl-meta"><span>${esc(f.run_id)}</span><span>${esc(f.target[0] || '-')}</span><span>${esc(provider)}</span><span>${esc(created)}</span></div></div>
+      <div class="tl-side">
+        ${f.findings ? `<span class="pill">${f.findings} findings${f.verified ? ' · ' + f.verified + ' verified' : ''}</span>` : ''}
+        ${flowsGroupMode === 'custom' ? `<button class="tl-btn" data-group-for="${esc(f.run_id)}">${f.group ? esc(f.group) : 'Pilih grup'} ▾</button>` : ''}
+        <span class="chip ${cls}">${esc(f.live ? 'running' : st || 'idle')}</span></div>
+    </div></div>`;
+}
+
 function renderFlowsPage(flows) {
+  lastFlowsList = flows;
   const showTable = flows.length > 0 && !showingNewFlowForm;
   $('flows-table-view').classList.toggle('hidden', !showTable);
   $('new-flow-view').classList.toggle('hidden', showTable);
   $('new-flow-close').classList.toggle('hidden', flows.length === 0);
   if (!showTable) return;
   const q = flowsFilter.toLowerCase();
-  const rows = flows.filter((f) => !q || matchesText(q, f.run_id, f.objective, f.target[0], f.status));
-  $('flows-table-body').innerHTML = rows.map((f) => {
-    const provider = (f.model || '').split('/')[0] || '-';
-    const created = f.started_at ? new Date(f.started_at * 1000).toLocaleString() : '-';
-    return `<tr data-run="${esc(f.run_id)}">
-      <td class="mono">${f.live ? '🟢 ' : ''}${esc(f.run_id)}</td>
-      <td>${f.favorite ? '★ ' : ''}${esc(f.title || (f.objective ? f.objective.slice(0, 50) : (f.target[0] || 'untitled')))}</td>
-      <td>${esc(f.status)}</td>
-      <td>${esc(provider)}</td>
-      <td class="mono">${esc(f.target[0] || '-')}</td>
-      <td>${esc(created)}</td>
-    </tr>`;
-  }).join('');
-  $('flows-table-body').querySelectorAll('tr').forEach((row) => {
-    row.addEventListener('click', () => openFlow(row.dataset.run));
+  const rows = flows.filter((f) => !q || matchesText(q, f.run_id, f.objective, f.target[0], f.status, f.group, f.title));
+  const buckets = new Map();
+  rows.slice().sort((a, b) => (b.started_at || 0) - (a.started_at || 0)).forEach((f) => {
+    const bk = flowBucket(f);
+    if (!buckets.has(bk.label)) buckets.set(bk.label, { ...bk, items: [] });
+    buckets.get(bk.label).items.push(f);
   });
+  const groups = [...buckets.values()].sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
+  $('flows-timeline').innerHTML = groups.map((g) => `<div class="tl-group ${collapsedGroups.has(flowsGroupMode + g.label) ? 'collapsed' : ''}">
+    <button class="tl-group-head" data-group-head="${esc(flowsGroupMode + g.label)}">${g.label ? esc(g.label) : ''}
+      <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg><span class="n">${g.items.length}</span></button>
+    <div class="tl-seq">${g.items.map(flowCardHtml).join('')}</div></div>`).join('')
+    || '<div class="empty-sub">Tidak ada flow yang cocok.</div>';
 }
+
+$('flows-timeline').classList.replace('tl-list', 'tl-groups');
+$('flows-timeline').addEventListener('click', (e) => {
+  const head = e.target.closest('[data-group-head]');
+  if (head) {
+    const k = head.dataset.groupHead;
+    if (collapsedGroups.has(k)) collapsedGroups.delete(k); else collapsedGroups.add(k);
+    renderFlowsPage(lastFlowsList);
+    return;
+  }
+  const gbtn = e.target.closest('[data-group-for]');
+  if (gbtn) { e.stopPropagation(); openGroupPicker(gbtn); return; }
+  const card = e.target.closest('.tl-card[data-run]');
+  if (card) openFlow(card.dataset.run);
+});
+
+async function setFlowGroup(runId, group) {
+  const f = lastFlowsList.find((x) => x.run_id === runId);
+  if (f) f.group = group;
+  closeGroupPicker();
+  renderFlowsPage(lastFlowsList);
+  try {
+    await fetch('/api/flows/' + encodeURIComponent(runId) + '/group', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ group }),
+    });
+  } catch (e) { /* retried on next list refresh */ }
+}
+
+function closeGroupPicker() { const p = document.getElementById('group-pop'); if (p) p.remove(); }
+
+function openGroupPicker(btn) {
+  closeGroupPicker();
+  const runId = btn.dataset.groupFor;
+  const names = [...new Set(lastFlowsList.map((f) => f.group).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const pop = document.createElement('div');
+  pop.id = 'group-pop';
+  pop.className = 'group-pop';
+  pop.innerHTML = names.map((n) => `<button class="menu-row" data-g="${esc(n)}">${esc(n)}</button>`).join('')
+    + '<button class="menu-row" data-new="1">+ Grup baru…</button>'
+    + (lastFlowsList.find((f) => f.run_id === runId && f.group) ? '<button class="menu-row" data-none="1">Keluarkan dari grup</button>' : '');
+  const r = btn.getBoundingClientRect();
+  pop.style.top = Math.min(r.bottom + 6, window.innerHeight - 220) + 'px';
+  pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 230)) + 'px';
+  pop.addEventListener('click', (e) => {
+    const t = e.target.closest('.menu-row');
+    if (!t) return;
+    if (t.dataset.new) {
+      const name = (window.prompt('Nama grup baru (maks. 40 karakter):') || '').trim();
+      if (name) setFlowGroup(runId, name.slice(0, 40)); else closeGroupPicker();
+    } else if (t.dataset.none) setFlowGroup(runId, '');
+    else setFlowGroup(runId, t.dataset.g);
+  });
+  document.body.appendChild(pop);
+}
+
+function renderFlowsMenu() {
+  const cur = GROUP_MODES.find((m) => m[0] === flowsGroupMode)[1];
+  $('flows-menu').innerHTML = `<div class="menu-row" style="cursor:default"><span>Kelompokkan berdasarkan</span><span class="mv">${cur}</span></div>
+    <div class="menu-sub">${GROUP_MODES.map(([k, label]) => `<button class="menu-row opt" data-mode="${k}"><span><span class="ck">${k === flowsGroupMode ? '✓' : ''}</span> ${label}</span></button>`).join('')}</div>`;
+}
+
+$('flows-menu-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  renderFlowsMenu();
+  $('flows-menu').classList.toggle('hidden');
+});
+$('flows-menu').addEventListener('click', (e) => {
+  const t = e.target.closest('[data-mode]');
+  if (!t) return;
+  flowsGroupMode = t.dataset.mode;
+  try { localStorage.setItem('adaptix.flowsGroup', flowsGroupMode); } catch (err) { /* ignore */ }
+  $('flows-menu').classList.add('hidden');
+  renderFlowsPage(lastFlowsList);
+});
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#flows-menu, #flows-menu-btn')) $('flows-menu').classList.add('hidden');
+  if (!e.target.closest('#group-pop, [data-group-for]')) closeGroupPicker();
+});
 
 function matchesText(q, ...fields) {
   return fields.some((f) => String(f || '').toLowerCase().includes(q));
@@ -1136,6 +1261,210 @@ function renderCodeAudit(view) {
       <div class="log-view">${view.log.slice(-40).map((l) => `<div class="log-line">${esc(l)}</div>`).join('')}</div></div>` : ''}`;
 }
 
+// ------------------------------------------------------- agent timeline UI ---
+const SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3, info: 4, unrated: 5 };
+const stepPanel = {};          // step key -> 'tool' | 'related' | 'patch' | null
+const openDetails = new Set(); // finding keys whose Details are expanded
+
+function fkey(d) {
+  const s = [d.title, d.endpoint, d.class, d.parameter].join('|');
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+
+// The operator's own decision wins; otherwise an engine-confirmed finding counts as verified.
+function findingState(view, d) {
+  const mark = (view.marks || {})[fkey(d)];
+  if (mark) return mark;
+  return ['verified', 'confirmed'].includes(String(d.status || '').toLowerCase()) ? 'verified' : 'pending';
+}
+
+function patchesFor(view, d) {
+  const applied = (((view.external || {}).report || {}).patches || {}).applied || [];
+  const where = String(d.endpoint || '');
+  return applied.filter((p) => p.path && where.includes(p.path));
+}
+
+function sortFindings(view, items) {
+  return items.slice().sort((a, b) => {
+    const va = findingState(view, a) === 'verified' ? 0 : 1;
+    const vb = findingState(view, b) === 'verified' ? 0 : 1;
+    return (SEV_RANK[sevClass(a.severity)] ?? 5) - (SEV_RANK[sevClass(b.severity)] ?? 5) || va - vb;
+  });
+}
+
+function findingCard(view, d, state) {
+  const k = fkey(d);
+  const ok = state === 'verified';
+  const open = openDetails.has(k);
+  const desc = d.cause || d.impact || '';
+  const evidence = [['target', d.url || d.endpoint], ['parameter', d.parameter], ['payload', d.payload],
+    ['extracted', (d.extracted || []).join(', ')], ['assessment', d.status]]
+    .filter((r) => r[1]).map((r) => r[0].padEnd(11) + r[1]).join('\n');
+  const detailRows = [['impact', d.impact], ['cause', d.cause], ['payload', d.payload], ['url', d.url]]
+    .filter((r) => r[1]).map((r) => `<div class="finding-text"><b>${r[0]}</b> ${esc(r[1])}</div>`).join('');
+  return `<div class="vf ${ok ? '' : 'pending'}">
+    <div class="vf-head">
+      <span style="color:var(--high);width:18px;height:18px;flex:none;margin-top:1px">${TL_ICON.warn}</span>
+      <div class="vf-title">${esc(d.title || d.class || 'unclassified finding')}</div>
+      ${d.cwe ? `<span class="pill">${esc(d.cwe)}</span>` : ''}
+      <span class="sev ${sevClass(d.severity)}">${esc(d.severity || 'unrated')}</span>
+    </div>
+    ${desc ? `<div class="vf-desc">${esc(desc)}</div>` : ''}
+    <div class="vf-meta">
+      <span class="vf-endpoint">${esc(d.endpoint || '-')}</span>
+      <span class="vf-badge ${ok ? 'ok' : 'wait'}">${ok ? 'Verified' : 'Pending verification'}</span>
+    </div>
+    <div class="vf-actions">
+      <button class="tl-btn" data-act="${ok ? 'reverify' : 'verify'}" data-key="${k}">${ok ? 'Reverify' : 'Verify'}</button>
+      <button class="tl-btn" data-act="ignore" data-key="${k}">Ignore</button>
+      <button class="tl-btn ${open ? 'on' : ''}" data-act="details" data-key="${k}">${open ? 'Hide details' : 'Details'}</button>
+    </div>
+    ${open ? `<div class="vf-details">${detailRows || '<div class="empty-sub">Tidak ada detail tambahan.</div>'}
+      ${!ok && d.mitigation ? `<div class="finding-text"><b>remediation</b> ${esc(d.mitigation)}</div>` : ''}</div>` : ''}
+    ${ok ? `<div><div class="vf-label">Reproducible evidence</div><pre class="vf-evidence">${esc(evidence || '-')}</pre></div>
+      ${d.mitigation ? `<div><div class="vf-label">Remediation</div><div class="vf-fix">${esc(d.mitigation)}</div></div>` : ''}` : ''}
+  </div>`;
+}
+
+function buildSteps(view) {
+  const dets = (view.details || []).filter((d) => matches(d.title, d.class, d.endpoint));
+  const steps = [];
+  if (view.engine === 'code') {
+    const ex = view.external || {};
+    const src = ex.source || {};
+    const rep = ex.report || {};
+    steps.push({ name: 'Source Reader', desc: 'Membaca source secara read-only; kode tidak dieksekusi.',
+      result: `${src.files || 0} file teks dibaca · ${src.excluded || 0} dikecualikan.`, items: [],
+      output: (view.log || []).slice(0, 6) });
+    steps.push({ name: 'Code Audit Agent', desc: 'Menganalisis source dan mengutip observasi read_source.',
+      result: rep.executive_summary || 'Audit selesai. Hasil tersedia untuk ditinjau.', items: dets, output: [] });
+    return steps;
+  }
+  const pages = view.searches || [];
+  steps.push({ name: 'Reconnaissance Agent', desc: 'Memetakan layanan, teknologi, dan endpoint aplikasi.',
+    result: `${pages.length} halaman dipetakan.`, items: [], output: pages.slice(0, 12).map((s) => s.url || s.title) });
+  const cats = {};
+  (view.hypotheses || []).forEach((h) => { if (h.category && !cats[h.category]) cats[h.category] = h.rationale || ''; });
+  dets.forEach((d) => { const c = d.class || 'other'; if (!(c in cats)) cats[c] = ''; });
+  Object.entries(cats).forEach(([c, rationale]) => {
+    const label = c.replace(/_/g, ' ');
+    const items = dets.filter((d) => (d.class || 'other') === c);
+    steps.push({ name: label.replace(/\b\w/g, (m) => m.toUpperCase()) + ' Agent', desc: rationale || ('Memeriksa ' + label),
+      result: items.length ? `${items.length} temuan untuk ditinjau.` : 'Tidak ada temuan pada langkah ini.', items, output: [] });
+  });
+  return steps;
+}
+
+function stepPanelHtml(view, step, kind) {
+  const states = step.items.map((d) => [d, findingState(view, d)]);
+  const live = states.filter(([, s]) => s !== 'ignored');
+  const ignored = states.filter(([, s]) => s === 'ignored');
+  if (kind === 'tool') {
+    if (!step.items.length) {
+      return step.output.length ? `<pre class="vf-evidence">${esc(step.output.join('\n'))}</pre>`
+        : '<div class="empty-sub">Belum ada output untuk langkah ini.</div>';
+    }
+    const cards = sortFindings(view, live.map(([d]) => d)).map((d) => findingCard(view, d, findingState(view, d))).join('');
+    const bar = ignored.length ? `<div class="ignored-bar">${ignored.length} temuan diabaikan
+      <button data-act="restore" data-keys="${ignored.map(([d]) => fkey(d)).join(',')}">Pulihkan</button></div>` : '';
+    return cards + bar || '<div class="empty-sub">Semua temuan diabaikan.</div>';
+  }
+  if (kind === 'related') {
+    return live.length ? sortFindings(view, live.map(([d]) => d)).map((d) => {
+      const ok = findingState(view, d) === 'verified';
+      return `<div class="rel-row"><span class="sev ${sevClass(d.severity)}">${esc(d.severity || 'unrated')}</span>
+        <div class="t">${esc(d.title || d.class)}<div class="e">${esc(d.endpoint || '')}</div></div>
+        <span class="vf-badge ${ok ? 'ok' : 'wait'}">${ok ? 'Verified' : 'Pending'}</span></div>`;
+    }).join('') : '<div class="empty-sub">Belum ada temuan terkait.</div>';
+  }
+  const verified = live.filter(([, s]) => s === 'verified').map(([d]) => d);
+  const blocks = sortFindings(view, verified).map((d) => {
+    const patches = patchesFor(view, d);
+    const body = patches.length ? patches.map((p) => {
+      const side = (label, v) => `<div><div class="patch-label">${label}</div>${String(v == null ? '' : v).trim()
+        ? `<pre class="patch-code">${esc(v)}</pre>` : '<div class="patch-empty">tidak ada kode</div>'}</div>`;
+      return `<div class="patch-head"><span class="pill">${esc(p.status || 'applied')}</span><code>${esc(p.path)}</code>
+        ${p.line ? `<span class="pill">baris ${p.line}${p.line_end && p.line_end !== p.line ? '-' + p.line_end : ''}</span>` : ''}</div>
+        ${p.rationale ? `<div class="finding-text"><b>alasan</b> ${esc(p.rationale)}</div>` : ''}
+        <div class="patch-grid">${side('sebelum', p.before)}${side('sesudah (kode baru)', p.after)}</div>`;
+    }).join('') : '<div class="empty-sub">Belum ada patch otomatis untuk temuan ini.</div>';
+    return `<div class="patch-block"><div class="finding-head" style="margin:0"><span class="sev ${sevClass(d.severity)}">${esc(d.severity || 'unrated')}</span>
+      <span>${esc(d.title || d.class)}</span></div>${body}</div>`;
+  }).join('');
+  return blocks || '<div class="empty-sub">Verifikasi sebuah temuan untuk melihat hasil patch-nya.</div>';
+}
+
+function renderAutomationTimeline(view) {
+  const steps = buildSteps(view);
+  const all = view.details || [];
+  const verifiedCount = all.filter((d) => findingState(view, d) === 'verified').length;
+  const src = ((view.external || {}).source || {}).name;
+  const orchStatus = view.running ? ['running', 'Running'] : (view.status === 'failed' ? ['failed', 'Failed'] : ['done', 'Completed']);
+  const target = src || (view.target || [])[0] || '-';
+  const stepsHtml = steps.map((step, i) => {
+    const id = view.run_id + ':' + step.name;
+    const kind = stepPanel[id] || null;
+    const live = view.running && i === steps.length - 1;
+    const hasVerified = step.items.some((d) => findingState(view, d) === 'verified');
+    const nLive = step.items.filter((d) => findingState(view, d) !== 'ignored').length;
+    const b = (k, label, extra) => `<button class="tl-btn ${kind === k ? 'on' : ''}" data-act="panel" data-step="${esc(id)}" data-kind="${k}">${label}${extra || ''}</button>`;
+    return `<div class="tl-item ${live ? 'running' : 'done'}"><div class="tl-step-body">
+      <div class="tl-card"><div class="tl-ico">${TL_ICON.bot}</div>
+        <div class="tl-main"><div class="tl-name">${esc(step.name)}</div><div class="tl-desc">${esc(step.desc)}</div></div>
+        <div class="tl-side"><span class="chip ${live ? 'running' : 'done'}">${live ? 'Running' : 'Completed'}</span></div></div>
+      <div class="tl-result"><div class="tl-result-text">${esc(step.result)}</div>
+        <div class="tl-actions">${b('tool', '&gt;_ Tool output')}${b('related', 'Related finding', ` <span class="n">${nLive}</span>`)}${hasVerified ? b('patch', 'Patch results') : ''}</div></div>
+      ${kind ? `<div class="tl-panel">
+        <div class="tl-panel-title">${{ tool: 'Tool output', related: 'Related findings', patch: 'Patch results' }[kind]}</div>
+        ${kind === 'patch' ? '<div class="tl-panel-sub">Kode baru hasil patch otomatis untuk menutup kerentanan yang sudah terverifikasi.</div>' : ''}
+        ${stepPanelHtml(view, step, kind)}</div>` : ''}
+    </div></div>`;
+  }).join('');
+  $('ff-content').innerHTML = `
+    <div class="tl-summary">
+      <div class="card"><div class="label">${src ? 'Source' : 'Target'}</div><div class="value" style="font-size:14px;word-break:break-all">${esc(target)}</div></div>
+      <div class="card"><div class="label">Status</div><div class="value" style="font-size:14px">${esc(view.status)}</div><div class="sub">${view.iteration || 0}/${view.max_iterations || 0} iterasi</div></div>
+      <div class="card"><div class="label">Findings</div><div class="value">${all.length}</div><div class="sub">${verifiedCount} verified · ${all.length - verifiedCount} pending</div></div>
+    </div>
+    <div class="tl-item tl-orch ${orchStatus[0]}" style="padding-left:0"><div class="tl-card">
+      <div class="tl-ico">${TL_ICON.bot}</div>
+      <div class="tl-main"><div class="tl-name">Orchestrator Agent</div>
+        <div class="tl-desc">${esc(view.objective || 'Coordinates the assessment and correlates evidence.')}</div></div>
+      <div class="tl-side"><span class="chip ${orchStatus[0]}">${orchStatus[1]}</span></div></div>
+      <div class="tl-children">${stepsHtml}</div></div>`;
+}
+
+async function setMark(key, state) {
+  if (!selectedFlow || !lastFlowView) return;
+  lastFlowView.marks = { ...(lastFlowView.marks || {}), [key]: state };
+  renderFlowSubPanel(lastFlowView);
+  try {
+    await fetch('/api/flows/' + encodeURIComponent(selectedFlow) + '/findings/mark', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key, state }),
+    });
+  } catch (e) { /* kept locally until the next poll */ }
+}
+
+$('ff-content').addEventListener('click', (e) => {
+  const t = e.target.closest('[data-act]');
+  if (!t || !lastFlowView) return;
+  const act = t.dataset.act;
+  const key = t.dataset.key;
+  if (act === 'panel') {
+    const id = t.dataset.step;
+    stepPanel[id] = stepPanel[id] === t.dataset.kind ? null : t.dataset.kind;
+    renderFlowSubPanel(lastFlowView);
+  } else if (act === 'details') {
+    if (openDetails.has(key)) openDetails.delete(key); else openDetails.add(key);
+    renderFlowSubPanel(lastFlowView);
+  } else if (act === 'verify') setMark(key, 'verified');
+  else if (act === 'reverify') setMark(key, 'pending');
+  else if (act === 'ignore') setMark(key, 'ignored');
+  else if (act === 'restore') t.dataset.keys.split(',').forEach((k) => setMark(k, 'pending'));
+});
+
 function renderFlowSubPanel(view) {
   const box = $('ff-content');
   const key = selectedFlowTab;
@@ -1147,6 +1476,7 @@ function renderFlowSubPanel(view) {
   }
   if (view.engine === 'code') {
     if (key === 'terminal') { renderTerminal(view); return; }
+    if (key === 'automation') { renderAutomationTimeline(view); return; }
     renderCodeAudit(view);
     return;
   }
@@ -1156,33 +1486,7 @@ function renderFlowSubPanel(view) {
     if (key === 'dashboard') { renderExternalDashboard(view); return; }
     if (key === 'agents') { renderExternalAgents(view); return; }
   }
-  if (key === 'automation') {
-    const hasLog = view.objective || view.log.length;
-    box.innerHTML = `
-      <div class="flow-detail-cards">
-        <div class="card"><div class="label">Target</div><div class="value" style="font-size:14px">${esc(view.target[0] || '-')}</div></div>
-        <div class="card"><div class="label">Status</div><div class="value" style="font-size:14px">${esc(view.status)}</div></div>
-        <div class="card"><div class="label">Findings</div><div class="value">${view.details.length}</div></div>
-      </div>
-      <div class="log-view">${hasLog
-        ? (view.objective && matches(view.objective) ? `<div class="log-line objective">${esc(view.objective)}</div>` : '') +
-          view.log.filter((l) => matches(l)).map((l) => `<div class="log-line">${esc(l)}</div>`).join('')
-        : '<div class="empty-state"><div class="empty-icon">⌁</div><div class="empty-title">No activity yet</div></div>'}
-      </div>
-      <div class="findings-list">${view.details.filter((d) => matches(d.title, d.class, d.endpoint)).map((d) => `
-        <div class="finding-card">
-          <div class="finding-head">
-            <span class="sev ${sevClass(d.severity)}">${esc(d.severity || 'unrated')}</span>
-            <span>${esc(d.title || d.class || 'unclassified finding')}</span>
-            ${d.cwe ? `<span class="pill">${esc(d.cwe)}</span>` : ''}
-          </div>
-          <div class="finding-row">endpoint&nbsp; ${esc(d.endpoint || '')}</div>
-          ${d.payload ? `<div class="finding-row">payload&nbsp; ${esc(d.payload)}</div>` : ''}
-          ${d.cause ? `<div class="finding-text"><b>cause</b> ${esc(d.cause)}</div>` : ''}
-          ${d.mitigation ? `<div class="finding-text"><b>fix</b> ${esc(d.mitigation)}</div>` : ''}
-        </div>`).join('')}</div>`;
-    return;
-  }
+  if (key === 'automation') { renderAutomationTimeline(view); return; }
   if (key === 'dashboard') {
     const t = view.tokens;
     box.innerHTML = `

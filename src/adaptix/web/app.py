@@ -343,6 +343,17 @@ def _flow_favorites():
     return _load_store('flow_favorites')  # [run_id, ...]
 
 
+def _finding_marks(run_id=None):
+    data = _load_store('finding_marks')
+    data = data if isinstance(data, dict) else {}  # {run_id: {finding_key: verified|pending|ignored}}
+    return data if run_id is None else (data.get(run_id) or {})
+
+
+def _flow_groups():
+    data = _load_store('flow_groups')
+    return data if isinstance(data, dict) else {}  # {run_id: custom group name}
+
+
 def _flow_title_for(run_id, fallback):
     titles = _flow_titles()
     return titles.get(run_id) if isinstance(titles, dict) and titles.get(run_id) else fallback
@@ -683,6 +694,7 @@ def _view_json(view: LiveView, running: bool, total_runs=None):
         'run_id': view.run_id,
         'title': _flow_title_for(view.run_id, ''),
         'favorite': view.run_id in _flow_favorites(),
+        'marks': _finding_marks(view.run_id) if view.run_id else {},
         'objective': view.objective,
         'status': view.status,
         'stop_reason': view.stop_reason,
@@ -860,8 +872,10 @@ def create_app() -> Flask:
                 started_at = 0
             out.append({'run_id': run_id, 'title': _flow_title_for(run_id, ''),
                         'favorite': run_id in _flow_favorites(),
+                        'group': _flow_groups().get(run_id, ''),
                         'target': view.target, 'status': view.status,
                         'model': view.model, 'findings': len(view.details),
+                        'verified': sum(1 for v in _finding_marks(run_id).values() if v == 'verified'),
                         'objective': view.objective, 'started_at': started_at,
                         'resumable': run_id in resumable,
                         'live': run_id == runner.run_id and runner.running})
@@ -902,6 +916,36 @@ def create_app() -> Flask:
         _save_store('flow_favorites', favorites)
         return jsonify({'favorite': favorite})
 
+    @app.post('/api/flows/<run_id>/group')
+    def flow_group(run_id):
+        """Assign a flow to a custom group (empty name removes it from its group)."""
+        if not os.path.isdir(_run_dir(run_id)):
+            return jsonify({'error': 'no such flow'}), 404
+        body = request.get_json(force=True, silent=True) or {}
+        group = re.sub(r'\s+', ' ', str(body.get('group') or '')).strip()[:40]
+        groups = _flow_groups()
+        if group:
+            groups[run_id] = group
+        else:
+            groups.pop(run_id, None)
+        _save_store('flow_groups', groups)
+        return jsonify({'group': group})
+
+    @app.post('/api/flows/<run_id>/findings/mark')
+    def flow_finding_mark(run_id):
+        """Operator decision on one finding: verified, pending (re-verify) or ignored."""
+        if not os.path.isdir(_run_dir(run_id)):
+            return jsonify({'error': 'no such flow'}), 404
+        body = request.get_json(force=True, silent=True) or {}
+        key, state = str(body.get('key') or ''), str(body.get('state') or '')
+        if not re.fullmatch(r'[0-9a-z]{1,32}', key) or state not in ('verified', 'pending', 'ignored'):
+            return jsonify({'error': 'invalid finding key or state'}), 400
+        allmarks = _finding_marks()
+        marks = allmarks.setdefault(run_id, {})
+        marks[key] = state
+        _save_store('finding_marks', allmarks)
+        return jsonify({'marks': marks})
+
     @app.delete('/api/flows/<run_id>')
     def flow_delete(run_id):
         base = _run_dir(run_id)
@@ -912,6 +956,12 @@ def create_app() -> Flask:
         import shutil
         shutil.rmtree(base)
         titles = _flow_titles(); titles.pop(run_id, None); _save_store('flow_titles', titles)
+        groups = _flow_groups()
+        if groups.pop(run_id, None) is not None:
+            _save_store('flow_groups', groups)
+        allmarks = _finding_marks()
+        if allmarks.pop(run_id, None) is not None:
+            _save_store('finding_marks', allmarks)
         favorites = _flow_favorites()
         if run_id in favorites:
             favorites.remove(run_id); _save_store('flow_favorites', favorites)
