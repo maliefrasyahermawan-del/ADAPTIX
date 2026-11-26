@@ -99,6 +99,31 @@ $('b-code-source-zip').addEventListener('change', syncCodeSource);
 $('b-code-source-folder').addEventListener('change', syncCodeSource);
 syncEngine();
 
+// Engine cards mirror the (visually hidden) #b-engine select, so every existing code path keeps reading its value.
+function syncEngineCards() {
+  document.querySelectorAll('.engine-card').forEach((c) => {
+    const on = c.dataset.engine === $('b-engine').value;
+    c.classList.toggle('on', on);
+    c.setAttribute('aria-checked', String(on));
+  });
+}
+document.querySelectorAll('.engine-card').forEach((c) => c.addEventListener('click', () => {
+  $('b-engine').value = c.dataset.engine;
+  $('b-engine').dispatchEvent(new Event('change'));
+}));
+$('b-engine').addEventListener('change', syncEngineCards);
+syncEngineCards();
+$('budget-close')?.addEventListener('click', () => $('budget-panel').classList.add('hidden'));
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('budget-panel').classList.add('hidden'); });
+$('instruction').addEventListener('keydown', (e) => {
+  // Ctrl/Cmd+Enter starts a chat; never cancels a running one (the button title flips to "Cancel").
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && $('start-btn').title !== 'Cancel') {
+    e.preventDefault();
+    $('start-btn').click();
+  }
+});
+$('go-settings')?.addEventListener('click', () => $('open-settings').click());
+
 async function loadCodeModels() {
   const select = $('b-code-model');
   if (!select) return;
@@ -712,6 +737,7 @@ function renderFlowsPage(flows) {
   $('new-flow-view').classList.toggle('hidden', showTable);
   $('new-flow-close').classList.toggle('hidden', flows.length === 0);
   if (!showTable) return;
+  if (!$('flows-timeline')) { console.warn('index.html belum diperbarui: elemen #flows-timeline tidak ada'); return; }
   const q = flowsFilter.toLowerCase();
   const rows = flows.filter((f) => !q || matchesText(q, f.run_id, f.objective, f.target[0], f.status, f.group, f.title));
   const buckets = new Map();
@@ -728,8 +754,8 @@ function renderFlowsPage(flows) {
     || '<div class="empty-sub">Tidak ada flow yang cocok.</div>';
 }
 
-$('flows-timeline').classList.replace('tl-list', 'tl-groups');
-$('flows-timeline').addEventListener('click', (e) => {
+$('flows-timeline')?.classList.replace('tl-list', 'tl-groups');
+$('flows-timeline')?.addEventListener('click', (e) => {
   const head = e.target.closest('[data-group-head]');
   if (head) {
     const k = head.dataset.groupHead;
@@ -788,12 +814,12 @@ function renderFlowsMenu() {
     <div class="menu-sub">${GROUP_MODES.map(([k, label]) => `<button class="menu-row opt" data-mode="${k}"><span><span class="ck">${k === flowsGroupMode ? '✓' : ''}</span> ${label}</span></button>`).join('')}</div>`;
 }
 
-$('flows-menu-btn').addEventListener('click', (e) => {
+$('flows-menu-btn')?.addEventListener('click', (e) => {
   e.stopPropagation();
   renderFlowsMenu();
   $('flows-menu').classList.toggle('hidden');
 });
-$('flows-menu').addEventListener('click', (e) => {
+$('flows-menu')?.addEventListener('click', (e) => {
   const t = e.target.closest('[data-mode]');
   if (!t) return;
   flowsGroupMode = t.dataset.mode;
@@ -802,7 +828,7 @@ $('flows-menu').addEventListener('click', (e) => {
   renderFlowsPage(lastFlowsList);
 });
 document.addEventListener('click', (e) => {
-  if (!e.target.closest('#flows-menu, #flows-menu-btn')) $('flows-menu').classList.add('hidden');
+  if (!e.target.closest('#flows-menu, #flows-menu-btn')) $('flows-menu')?.classList.add('hidden');
   if (!e.target.closest('#group-pop, [data-group-for]')) closeGroupPicker();
 });
 
