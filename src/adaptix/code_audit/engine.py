@@ -92,21 +92,60 @@ def _now():
     return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
 
 
+class _AtomicWriteLock:
+    """Thread-local lock so heartbeat + main thread never replace the same
+    file at the same instant. On Windows os.replace() on a file that another
+    handle (Flask poller reading it) is holding raises PermissionError 5;
+    retry + per-process temp names make that race a no-op."""
+
+    def __init__(self):
+        import threading
+        self._lock = threading.Lock()
+        self._pid = os.getpid()
+        self._counter = 0
+
+    def write(self, path: Path, payload):
+        with self._lock:
+            self._counter += 1
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temp = path.with_name(f'.{path.name}.{self._pid}.{self._counter}.tmp')
+            last_exc = None
+            for attempt in range(5):
+                try:
+                    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+                        json.dump(payload, handle, ensure_ascii=False, indent=2)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    os.replace(temp, path)
+                    return
+                except PermissionError as exc:
+                    last_exc = exc
+                    time.sleep(0.05 * (attempt + 1))
+                except OSError as exc:
+                    last_exc = exc
+                    time.sleep(0.05 * (attempt + 1))
+            raise last_exc
+
+
+_ATOMIC_WRITER = _AtomicWriteLock()
+
+
+def _log(msg: str):
+    """Worker stdout is the live terminal in the UI; also written to worker.log."""
+    print(msg, flush=True)
+
+
 def _write_json(path: Path, payload):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name('.' + path.name + '.tmp')
-    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, 'w', encoding='utf-8') as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temp, path)
+    _ATOMIC_WRITER.write(path, payload)
 
 
 def _append(path: Path, row):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open('a', encoding='utf-8') as handle:
-        handle.write(json.dumps(row, ensure_ascii=False) + '\n')
+    import threading
+    with _ATOMIC_WRITER._lock:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('a', encoding='utf-8') as handle:
+            handle.write(json.dumps(row, ensure_ascii=False) + '\n')
 
 
 def _progress(run_dir: Path, state):
@@ -555,23 +594,52 @@ def run_audit(run_dir, instruction, *, model, bundle, time_budget=900,
     """Run one bounded static audit. Returns the final state and optionally a report."""
     run_dir = Path(run_dir)
     deadline = time.time() + max(1, int(time_budget))
-    # C: deterministic scanner pass first (bandit/semgrep/osv/gitleaks
-    # subprocess fallbacks) — its verified findings are in the payload so
-    # the LLM does not have to discover them from scratch.
-    # ADAPTIX_NO_SCANNER=1 disables the pre-pass (used by unit tests).
-    scanner_findings = []
+    # Bootstrap state FIRST so the UI shows progress immediately —
+    # scanner runs below (30s+) AFTER the first _progress write.
+    # Otherwise the UI sees zero output for 30s and the worker looks stuck.
+    _pre_state = {
+        'objective': instruction, 'model': model, 'source_name': bundle.get('name') or 'source.zip',
+        'observations': [], 'notes': '', 'feedback': '', 'iterations': 0,
+        'max_iterations': max(1, int(max_iterations)), 'token_budget': max(1000, int(token_budget)),
+        'tokens_used': 0, 'tokens_request': 0, 'status': 'running', 'node': 'packaging',
+        'stop_reason': None, 'error': '', 'run_started_at': time.time(),
+        'waiting_provider': False, 'scanner_findings': [],
+        'first_turn_batch': [],
+        'event': 'mengemas bundle & menjalankan scanner deterministik …',
+    }
+    _progress(run_dir, _pre_state)
+    _activity(run_dir, 'audit', _pre_state['source_name'], 'starting',
+              f"{len(bundle.get('files') or {})} file source dikemas; model {model}")
+    _log(f'[audit] mulai: {len(bundle.get("files") or {})} file, '
+         f'{bundle.get("excluded", 0)} dikecualikan, model {model}')
+    _log('[audit] scanner deterministik: bandit / semgrep / gitleaks / osv-scanner / fallback-regex')
+    # C: deterministic scanner pass — AFTER first progress write so UI is alive.
+    scanner_findings: list[dict] = []
     if os.getenv('ADAPTIX_NO_SCANNER', '').strip() not in ('1', 'true', 'yes'):
         try:
             from src.adaptix.code_audit import scanner as _scanner
-            scanner_findings = _scanner.scan_bundle(bundle)
-        except Exception:
+            scanner_findings = _scanner.scan_bundle(bundle) or []
+        except Exception as _scan_exc:
+            _log(f'[scanner] gagal: {_scan_exc}')
             scanner_findings = []
+    _pre_state['scanner_findings'] = scanner_findings
+    _pre_state['node'] = 'scanner-done'
+    _pre_state['event'] = (f'scanner selesai: {len(scanner_findings)} kandidat'
+                           if scanner_findings else 'scanner selesai: 0 kandidat, lanjut ke LLM')
+    _progress(run_dir, _pre_state)
+    _log(f'[scanner] selesai: {len(scanner_findings)} kandidat'
+         + (f' ({sorted({f.get("scanner") for f in scanner_findings})})' if scanner_findings else ''))
+    _activity(run_dir, 'scanner', '', 'completed',
+              f'{len(scanner_findings)} kandidat dari scanner deterministik')
+    for row in (scanner_findings or [])[:20]:
+        _log(f'  [{row.get("severity", "?")}] {row.get("scanner", "?")} '
+             f'{row.get("path", "")}:{row.get("line", "")} {row.get("title", "")[:120]}')
     state = {
         'objective': instruction, 'model': model, 'source_name': bundle.get('name') or 'source.zip',
         'observations': [], 'notes': '', 'feedback': '', 'iterations': 0,
         'max_iterations': max(1, int(max_iterations)), 'token_budget': max(1000, int(token_budget)),
         'tokens_used': 0, 'tokens_request': 0, 'status': 'running', 'node': 'plan',
-        'stop_reason': None, 'error': '', 'run_started_at': time.time(),
+        'stop_reason': None, 'error': '', 'run_started_at': _pre_state['run_started_at'],
         'waiting_provider': False, 'scanner_findings': scanner_findings,
         'first_turn_batch': _first_turn_batch(bundle),
     }
@@ -608,8 +676,8 @@ def run_audit(run_dir, instruction, *, model, bundle, time_budget=900,
     invalid_responses = 0
     invalid_reports = 0
     _progress(run_dir, state)
-    _activity(run_dir, 'audit', state['source_name'], 'started',
-              f"{len(bundle.get('files') or {})} file source; model {model}")
+    _log(f'[llm] mulai iterasi 1/{state["max_iterations"]} model={model} '
+         f'batch pertama: {len(state["first_turn_batch"])} file')
 
     while state['iterations'] < state['max_iterations']:
         if time.time() >= deadline:
@@ -744,7 +812,7 @@ def run_audit(run_dir, instruction, *, model, bundle, time_budget=900,
                       if observation['tool'] == 'read_source' else
                       f"{len(observation['data'].get('files') or [])} path",
                       observation['id'])
-            print(f"[tool] {observation['tool']} {observation.get('target') or ''}", flush=True)
+            _log(f'[tool] {observation["tool"]} {observation.get("target") or ""}')
         else:
             state['node'] = 'report'
             try:
@@ -780,7 +848,7 @@ def run_audit(run_dir, instruction, *, model, bundle, time_budget=900,
                          error='', node='done')
             _activity(run_dir, 'report', record['title'], 'completed',
                       f"{len(record['findings'])} temuan")
-            print(f"[report] {record['title']} ({len(record['findings'])} temuan)", flush=True)
+            _log(f'[report] {record["title"]} ({len(record["findings"])} temuan)')
             break
         _progress(run_dir, state)
     else:

@@ -667,12 +667,17 @@ def _code_snapshot(run_id, base) -> LiveView:
         'report': report,
         'source': {'name': meta.get('source_name'), 'sha256': meta.get('source_sha256'),
                    'files': meta.get('files'), 'excluded': meta.get('excluded')} if meta else {},
-        'scanner': (report or {}).get('verified_findings') if report else [],
+        'scanner': (progress or {}).get('verified_findings') or (report or {}).get('verified_findings') or [],
+        'scanner_live': (progress or {}).get('scanner_findings') or [],
         'excluded_files': _excluded,
+        'activity': _read_jsonl(os.path.join(base, 'code-activity.ndjson'), limit=200),
+        'bundle_files': sorted((_bundle.get('files') or {}).keys()) if isinstance(_bundle, dict) else [],
     }
-    if meta and meta.get('excluded'):
-        # fallback when progress.json is stale: read excluded_files from bundle
-        pass
+    if progress and progress.get('status'):
+        # progress wins over a stale report/status
+        view.status = str(progress.get('status') or view.status)
+        if progress.get('event'):
+            view.elapsed = float(progress.get('elapsed_seconds') or view.elapsed)
     try:
         view.log = _tail_text(os.path.join(base, 'logs', 'worker.log'), max_lines=200).splitlines()
     except OSError:

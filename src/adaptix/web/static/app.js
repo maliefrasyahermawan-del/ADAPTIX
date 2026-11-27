@@ -1605,6 +1605,13 @@ function renderCodeAudit(view) {
       <div class="card"><div class="label">Iterasi</div><div class="value">${view.iteration || 0}/${view.max_iterations || 0}</div><div class="sub">${view.stop_reason ? 'stop: ' + esc(view.stop_reason) : (progress.event ? esc(progress.event.slice(0, 80)) : 'audit statis')}</div></div>
       <div class="card"><div class="label">Temuan</div><div class="value">${findings.length}</div><div class="sub">${scanner.length} verified · model-assessed, bukan verifikasi dinamis</div></div>
     </div>
+    <div class="dash-card">
+      <div class="dash-card-title">🖥 Terminal audit <span class="pill" id="audit-term-pill">${esc(view.status)}</span></div>
+      <div class="dash-card-sub">Log langsung dari worker. Scroll otomatis ke bawah; ${waiting ? '⏳ menunggu model …' : 'worker selesai / idle'}.</div>
+      <div class="terminal-shell" style="margin-top:8px">
+        <pre class="terminal-view" id="audit-term-body" style="max-height:300px;overflow:auto">${esc((view.log || []).join('\n') || 'mengemas bundle & menjalankan scanner…')}</pre>
+      </div>
+    </div>
     ${waiting ? `<div class="dash-card"><div class="dash-card-title">⏳ menunggu model …</div><div class="dash-card-sub">${esc(progress.event || 'mengirim prompt ke provider')} · ${Math.round(elapsed || 0)}s · token request ${progress.tokens_request ? Number(progress.tokens_request).toLocaleString() : '-'}</div></div>` : ''}
     ${scannerHtml}
     ${excludedHtml}
@@ -1963,6 +1970,9 @@ async function refresh() {
     $('start-btn').title = view.running ? 'Cancel' : 'Start';
     if ($('panel-dashboard').classList.contains('active')) loadDashboard();
     if ($('panel-flows').classList.contains('active')) loadFlows();
+    // Flow-detail polling: Tanpa ini, halaman openFlow tidak diperbarui —
+    // worker jalan tapi UI pasif. Tiap 2s ambil snapshot terbaru.
+    if (selectedFlow && !$('flow-fullpage').classList.contains('hidden')) refreshFlowDetail();
   } catch (e) { /* server not reachable yet */ }
 }
 
