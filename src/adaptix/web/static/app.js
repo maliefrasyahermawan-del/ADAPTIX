@@ -1517,7 +1517,32 @@ function renderCodeAudit(view) {
   const excludedFiles = external.excluded_files || [];
   const elapsed = progress.elapsed_seconds || view.elapsed || 0;
   const waiting = progress.waiting_provider;
-  const scannerHtml = scanner.length ? `
+  const evaluation = external.evaluation || (external.report && external.report.evaluation) || {};
+  const evalHtml = evaluation.score != null ? `
+    <div class="dash-card eval-hero">
+      <div class="eval-score-wrap">
+        <div class="eval-score">${evaluation.score}<span>/100</span></div>
+        <div>
+          <div class="dash-card-title">🔒 Evaluasi Keamanan · grade ${esc(evaluation.grade || '')}</div>
+          <div class="eval-grade-sub">${esc(evaluation.grade_text || '')}</div>
+          <div class="dash-card-sub" style="margin-top:6px">${esc(evaluation.verdict || '')}</div>
+        </div>
+      </div>
+      <div class="eval-grid">
+        ${(evaluation.categories || []).map((c) => `
+          <div class="eval-cat ${c.deduction > 12 ? 'bad' : (c.deduction > 0 ? 'warn' : 'ok')}">
+            <div class="eval-cat-head"><span>${esc(c.category)}</span><span class="eval-ded">-${c.deduction}pt</span></div>
+            ${(c.notes || []).map((n) => `<div class="eval-note">${esc(n)}</div>`).join('')}
+            <div class="eval-rec"><b>Aksi:</b> ${esc(c.recommendation || '')}</div>
+          </div>`).join('')}
+      </div>
+      ${(evaluation.upgrades || []).length ? `<div class="dash-card-title" style="margin-top:14px">🛠 Prioritas upgrade</div>
+      <div class="eval-upgrades">${evaluation.upgrades.map((u) => `
+        <div class="eval-upgrade ${esc(u.prioritas)}">
+          <span class="pill ${esc(u.prioritas)}">${esc(u.prioritas)}</span>
+          <div><b>${esc(u.kategori)}:</b> ${esc(u.aksi)}</div>
+        </div>`).join('')}</div>` : ''}
+    </div>` : '';
     <div class="dash-card">
       <div class="dash-card-title">Scanner deterministik (${scanner.length} kandidat) · verified</div>
       <div class="dash-card-sub">Hasil bandit/semgrep/gitleaks/osv atau fallback regex — bukan penilaian LLM. LLM hanya menilai konteks di bawah.</div>
@@ -1534,25 +1559,7 @@ function renderCodeAudit(view) {
           ${s.description ? `<div class="finding-text">${esc(String(s.description).slice(0, 600))}</div>` : ''}
         </div>`).join('')}</div>
     </div>` : '';
-  const evaluation = external.evaluation || (external.report && external.report.evaluation) || {};
-  const evalHtml = evaluation.score != null ? `
-    <div class="dash-card">
-      <div class="dash-card-title">🔒 Evaluasi Keamanan — skor ${evaluation.score}/100 · grade ${esc(evaluation.grade || '')}</div>
-      <div class="dash-card-sub">${esc(evaluation.verdict || '')}</div>
-      <div class="findings-list" style="margin-top:8px">
-        ${(evaluation.categories || []).map((c) => `
-          <div class="finding-card">
-            <div class="finding-head"><span>${esc(c.category)}</span><span class="pill ${c.deduction > 12 ? 'bad' : (c.deduction > 0 ? 'warn' : 'ok')}">-${c.deduction}pt</span></div>
-            ${(c.notes || []).map((n) => `<div class="finding-text">${esc(n)}</div>`).join('')}
-            <div class="finding-text"><b>rekomendasi:</b> ${esc(c.recommendation || '')}</div>
-          </div>`).join('')}
-      </div>
-      ${(evaluation.upgrades || []).length ? `<div class="dash-card-title" style="margin-top:12px">Prioritas upgrade</div>
-      <div class="findings-list">${evaluation.upgrades.map((u) => `
-        <div class="finding-card"><div class="finding-head"><span>[${esc(u.prioritas)}] ${esc(u.kategori)}</span></div>
-        <div class="finding-text">${esc(u.aksi)}</div></div>`).join('')}</div>` : ''}
-    </div>` : '';
-  const excludedHtml = excludedFiles.length ? `
+  const scannerHtml = scanner.length ? `  const excludedHtml = excludedFiles.length ? `
     <div class="dash-card">
       <div class="dash-card-title">File dikecualikan (${excludedFiles.length}) · per alasan</div>
       <div class="dash-card-sub">Buka untuk melihat kenapa file tidak masuk bundle — oversize / ekstensi / private / binary.</div>
@@ -1578,6 +1585,12 @@ function renderCodeAudit(view) {
       ${d.impact ? `<div class="finding-text"><b>dampak</b> ${esc(d.impact)}</div>` : ''}
       ${d.mitigation ? `<div class="finding-text"><b>perbaikan</b> ${esc(d.mitigation)}</div>` : ''}
     </div>`).join('') : '<div class="empty-sub">Belum ada temuan yang dapat dibuktikan.</div>';
+  const execShort = (() => {
+    const raw = report.executive_summary || '';
+    if (!raw) return 'Model membaca source yang diunggah; kode tidak dieksekusi.';
+    const lines = raw.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('-') && !l.startsWith('Rincian'));
+    return (lines.slice(0, 2).join(' ') || raw.split('\n')[0]).slice(0, 400);
+  })();
   const patches = report.patches || {};
   const patchApplied = patches.applied || [];
   const patchSkipped = patches.skipped || [];
@@ -1636,7 +1649,7 @@ function renderCodeAudit(view) {
     ${excludedHtml}
     <div class="dash-card">
       <div class="dash-card-title">${esc(report.title || 'Audit kode')}</div>
-      <div class="dash-card-sub">${esc(report.executive_summary || 'Model membaca source yang diunggah; kode tidak dieksekusi.')}</div>
+      <div class="dash-card-sub">${esc(execShort)}</div>
       ${report.limitations ? `<div class="finding-text" style="margin-top:8px"><b>keterbatasan</b> ${esc(report.limitations)}</div>` : ''}
       ${report.next_steps ? `<div class="finding-text" style="margin-top:6px"><b>berikutnya</b> ${esc(report.next_steps)}</div>` : ''}
     </div>

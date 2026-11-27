@@ -752,3 +752,28 @@ html[data-theme="dark"] .flows-table th { background: var(--surface); }
 .file-limit-row .check-label { align-self: end; white-space: nowrap; padding-bottom: 9px; }
 /* .check-label sets display:flex !important later in the file; make .hidden win. */
 .check-label.hidden { display: none !important; }
+/* Evaluasi keamanan terstruktur ------------------------------------------------ */
+.eval-hero { border: 1px solid var(--accent); }
+.eval-score-wrap { display: flex; gap: 18px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.eval-score { font-size: 48px; font-weight: 800; line-height: 1; color: var(--accent); }
+.eval-score span { font-size: 18px; color: var(--text-dim); font-weight: 500; }
+.eval-grade-sub { font-size: 13px; color: var(--text-dim); }
+.eval-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; margin-top: 10px; }
+.eval-cat { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--surface-2); }
+.eval-cat.bad { border-color: var(--bad-fg); background: rgba(255, 90, 90, 0.06); }
+.eval-cat.warn { border-color: #d9a400; }
+.eval-cat.ok { border-color: var(--ok-fg); opacity: 0.9; }
+.eval-cat-head { display: flex; justify-content: space-between; font-weight: 700; font-size: 13px; gap: 8px; }
+.eval-ded { color: var(--bad-fg); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.eval-cat.warn .eval-ded { color: #b88900; }
+.eval-cat.ok .eval-ded { color: var(--ok-fg); }
+.eval-note { font-size: 12.5px; color: var(--text-dim); margin-top: 5px; }
+.eval-rec { font-size: 12.5px; margin-top: 7px; }
+.eval-upgrades { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.eval-upgrade { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px; }
+.eval-upgrade .pill { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.eval-upgrade.tinggi { background: rgba(255, 80, 80, 0.06); border-color: var(--bad-fg); }
+.eval-upgrade.sedang { background: rgba(255, 190, 0, 0.05); }
+.eval-upgrade.rendah { opacity: 0.85; }
+.code-warn { border: 1px solid #d9a400; background: rgba(255,190,0,0.08); border-radius: 8px; padding: 8px 12px; font-size: 12.5px; margin-top: 8px; }
+
