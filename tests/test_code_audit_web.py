@@ -205,7 +205,37 @@ def test_file_limit_defaults_and_clamps(monkeypatch, tmp_path):
         'max_file_kb': '9999',
         'oversize': 'bogus',
     }, content_type='multipart/form-data')
-    assert calls['source_limits'] == {'max_file': 200_000, 'oversize': 'skip'}
+    assert calls['source_limits'] == {'max_file': 1024000, 'oversize': 'skip'}
+
+
+def test_audit_preflight_warns_about_oversized_root(tmp_path, monkeypatch):
+    monkeypatch.setattr(webapp, 'runner', webapp.Runner(webapp._default_view()))
+    client = webapp.create_app().test_client()
+    big = tmp_path / 'big.html'
+    big.write_text('a' * 300_000, encoding='utf-8')
+    (tmp_path / 'small.py').write_text('print(1)', encoding='utf-8')
+    resp = client.get('/api/audit/preflight', query_string={
+        'source_path': str(tmp_path), 'max_file_kb': '200'})
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert any(o['name'] == 'big.html' for o in data['oversized'])
+    assert data['warnings']
+    # at 1024 KB nothing warns
+    resp2 = client.get('/api/audit/preflight', query_string={
+        'source_path': str(tmp_path), 'max_file_kb': '1024'})
+    assert resp2.get_json()['warnings'] == []
+
+
+def test_excluded_files_reasons_available(tmp_path):
+    from src.adaptix.code_audit.sources import directory_bundle
+    src = tmp_path / 'project'
+    src.mkdir()
+    (src / 'app.py').write_text('print(1)', encoding='utf-8')
+    (src / 'big.html').write_text('a' * 300_000, encoding='utf-8')
+    bundle = directory_bundle(src, max_file=200_000, oversize='skip')
+    assert bundle['excluded'] >= 1
+    rows = bundle.get('excluded_files') or []
+    assert any(r.get('path') == 'big.html' and r.get('reason') == 'oversize_skip' for r in rows)
 
 
 def test_auto_patch_rejects_zip(monkeypatch):

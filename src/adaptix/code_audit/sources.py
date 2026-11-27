@@ -24,6 +24,12 @@ MAX_FILE_LIMIT = 4_000_000
 MAX_FILES = 300
 OVERSIZE_MODES = ('fail', 'skip')
 
+
+def _excluded_row(reason, path='', size=None, limit_kb=None, ext=''):
+    """One row in bundle['excluded_files'] — UI lists it with the real reason."""
+    return {'path': path, 'reason': reason, 'size': size,
+            'limit_kb': limit_kb, 'ext': ext}
+
 EXTENSIONS = {
     '.py', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.php', '.go', '.java',
     '.rb', '.rs', '.cs', '.c', '.cpp', '.h', '.hpp', '.swift', '.kt', '.sql',
@@ -76,7 +82,7 @@ def unpack(raw: bytes, *, max_file=MAX_FILE, max_files=MAX_FILES, max_total=MAX_
         raise ValueError('ZIP maksimal 4 MB.')
     files: dict[str, dict] = {}
     total = 0
-    excluded = 0
+    excluded_files: list[dict] = []
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             if len(archive.infolist()) > 1000:
@@ -97,7 +103,10 @@ def unpack(raw: bytes, *, max_file=MAX_FILE, max_files=MAX_FILES, max_total=MAX_
                         or any(_GENERATED_BACKUP.match(part) for part in path.parts)
                         or path.name.startswith('.env')
                         or path.suffix.lower() not in EXTENSIONS):
-                    excluded += 1
+                    if excluded_files or True:
+                        excluded_files.append(_excluded_row(
+                            'private_or_extension', name, item.file_size,
+                            None, path.suffix.lower()))
                     continue
                 if name in files:
                     raise ValueError('Path file dalam ZIP berulang.')
@@ -105,14 +114,18 @@ def unpack(raw: bytes, *, max_file=MAX_FILE, max_files=MAX_FILES, max_total=MAX_
                     raise ValueError(f'Maksimal {max_files} file teks.')
                 if item.file_size > max_file:
                     if oversize == 'skip':
-                        excluded += 1
+                        excluded_files.append(_excluded_row(
+                            'oversize_skip', name, item.file_size,
+                            max_file // 1000, path.suffix.lower()))
                         continue
                     raise ValueError(_too_big(max_file))
                 with archive.open(item) as stream:
                     data = stream.read(max_file + 1)
                 if len(data) > max_file:
                     if oversize == 'skip':
-                        excluded += 1
+                        excluded_files.append(_excluded_row(
+                            'oversize_skip', name, len(data),
+                            max_file // 1000, path.suffix.lower()))
                         continue
                     raise ValueError(_too_big(max_file))
                 total += len(data)
@@ -121,10 +134,10 @@ def unpack(raw: bytes, *, max_file=MAX_FILE, max_files=MAX_FILES, max_total=MAX_
                 try:
                     text = data.decode('utf-8')
                 except UnicodeError:
-                    excluded += 1
+                    excluded_files.append(_excluded_row('binary', name, len(data)))
                     continue
                 if '\x00' in text:
-                    excluded += 1
+                    excluded_files.append(_excluded_row('binary', name, len(data)))
                     continue
                 safe = redact(text)
                 files[name] = {
@@ -136,7 +149,9 @@ def unpack(raw: bytes, *, max_file=MAX_FILE, max_files=MAX_FILES, max_total=MAX_
         raise ValueError('ZIP tidak dapat dibaca atau terenkripsi.') from exc
     if not files:
         raise ValueError('ZIP tidak memiliki source teks yang dapat dianalisis.')
-    return {'files': files, 'excluded': excluded, 'sha256': hashlib.sha256(raw).hexdigest()}
+    return {'files': files, 'excluded': len(excluded_files),
+            'excluded_files': excluded_files,
+            'sha256': hashlib.sha256(raw).hexdigest()}
 
 
 def _allowed_roots():
@@ -174,28 +189,36 @@ def directory_bundle(source_dir, *, name=None, max_file=MAX_FILE, max_files=MAX_
         raise ValueError('Folder source berada di luar ADAPTIX_CODE_AUDIT_ROOTS.')
     files: dict[str, dict] = {}
     total = 0
-    excluded = 0
+    excluded_files: list[dict] = []
     for dirpath, dirnames, filenames in os.walk(source, followlinks=False):
         dirnames[:] = sorted(part for part in dirnames
                              if part not in PRIVATE and not _GENERATED_BACKUP.match(part))
         for filename in sorted(filenames):
             path = Path(dirpath) / filename
             relative = path.relative_to(source)
+            rel_name = relative.as_posix()
             if (any(part in PRIVATE for part in relative.parts)
                     or filename.startswith('.env') or path.is_symlink()
                     or not path.is_file()
                     or path.suffix.lower() not in EXTENSIONS):
-                excluded += 1
+                try:
+                    size = path.stat().st_size if path.is_file() else None
+                except OSError:
+                    size = None
+                excluded_files.append(_excluded_row(
+                    'private_or_extension', rel_name, size, None, path.suffix.lower()))
                 continue
             try:
                 with path.open('rb') as stream:
                     data = stream.read(max_file + 1)
             except OSError:
-                excluded += 1
+                excluded_files.append(_excluded_row('unreadable', rel_name))
                 continue
             if len(data) > max_file:
                 if oversize == 'skip':
-                    excluded += 1
+                    excluded_files.append(_excluded_row(
+                        'oversize_skip', rel_name, len(data),
+                        max_file // 1000, path.suffix.lower()))
                     continue
                 raise ValueError(_too_big(max_file))
             total += len(data)
@@ -204,15 +227,15 @@ def directory_bundle(source_dir, *, name=None, max_file=MAX_FILE, max_files=MAX_
             try:
                 text = data.decode('utf-8')
             except UnicodeError:
-                excluded += 1
+                excluded_files.append(_excluded_row('binary', rel_name, len(data)))
                 continue
             if '\x00' in text:
-                excluded += 1
+                excluded_files.append(_excluded_row('binary', rel_name, len(data)))
                 continue
             if len(files) >= max_files:
                 raise ValueError(f'Maksimal {max_files} file teks.')
             safe = redact(text)
-            files[relative.as_posix()] = {
+            files[rel_name] = {
                 'text': safe,
                 'sha256': hashlib.sha256(safe.encode()).hexdigest(),
                 'lines': len(safe.splitlines()),
@@ -223,7 +246,9 @@ def directory_bundle(source_dir, *, name=None, max_file=MAX_FILE, max_files=MAX_
     for rel_name in sorted(files):
         digest.update(rel_name.encode())
         digest.update(files[rel_name]['sha256'].encode())
-    return {'files': files, 'excluded': excluded, 'sha256': digest.hexdigest(),
+    return {'files': files, 'excluded': len(excluded_files),
+            'excluded_files': excluded_files,
+            'sha256': digest.hexdigest(),
             'name': name or source.name, 'source_path': str(source)}
 
 
@@ -239,6 +264,7 @@ def _persist_bundle(run_dir: Path, bundle: dict, name: str, *, kind: str,
         'sha256': bundle['sha256'],
         'files': bundle['files'],
         'excluded': bundle['excluded'],
+        'excluded_files': bundle.get('excluded_files', []),
         'created': time.time(),
     }
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

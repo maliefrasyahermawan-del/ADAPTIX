@@ -161,7 +161,31 @@ function syncCodeSource() {
   $('b-code-zip-row').classList.toggle('hidden', folder);
   $('b-code-folder-row').classList.toggle('hidden', !folder);
   $('b-code-patch-row').classList.toggle('hidden', !folder);
+  preflightCodeFolder();
 }
+
+async function preflightCodeFolder() {
+  const warn = $('b-code-skip-warning');
+  if (!warn) return;
+  warn.classList.add('hidden'); warn.textContent = '';
+  if (codeSourceKind() !== 'folder') return;
+  const path = ($('b-code-path') || {}).value || '';
+  if (!path.trim()) return;
+  try {
+    const kb = ($('b-code-file-limit') || {}).value || '1024';
+    const res = await fetch(`/api/audit/preflight?source_path=${encodeURIComponent(path)}&max_file_kb=${kb}`);
+    const data = await res.json();
+    if (!res.ok || !data.warnings || !data.warnings.length) return;
+    warn.textContent = data.warnings.join('; ');
+    warn.classList.remove('hidden');
+  } catch (e) { /* offline */ }
+}
+
+const _preflightDebounce = {};
+['b-code-path', 'b-code-file-limit'].forEach((id) => {
+  const el = $(id);
+  if (el) el.addEventListener('change', () => { clearTimeout(_preflightDebounce[id]); _preflightDebounce[id] = setTimeout(preflightCodeFolder, 300); });
+});
 
 $('b-engine').addEventListener('change', syncEngine);
 $('b-full-offensive').addEventListener('change', syncEngine);
@@ -1472,6 +1496,40 @@ function renderCodeAudit(view) {
   const report = external.report || {};
   const progress = external.progress || {};
   const findings = view.details || [];
+  const scanner = external.scanner || [];
+  const excludedFiles = external.excluded_files || [];
+  const elapsed = progress.elapsed_seconds || view.elapsed || 0;
+  const waiting = progress.waiting_provider;
+  const scannerHtml = scanner.length ? `
+    <div class="dash-card">
+      <div class="dash-card-title">Scanner deterministik (${scanner.length} kandidat) · verified</div>
+      <div class="dash-card-sub">Hasil bandit/semgrep/gitleaks/osv atau fallback regex — bukan penilaian LLM. LLM hanya menilai konteks di bawah.</div>
+      <div class="findings-list">${scanner.map((s) => `
+        <div class="finding-card">
+          <div class="finding-head">
+            <span class="sev ${sevClass(s.severity)}">${esc(s.severity || 'info')}</span>
+            <span>${esc(s.title || 'scanner finding')}</span>
+            ${s.cwe ? `<span class="pill">${esc(s.cwe)}</span>` : ''}
+            <span class="pill">${esc(s.scanner || 'scanner')}</span>
+            <span class="pill verified">verified</span>
+          </div>
+          ${s.path ? `<div class="finding-row">${esc(s.path)}${s.line ? ':' + s.line : ''}</div>` : ''}
+          ${s.description ? `<div class="finding-text">${esc(String(s.description).slice(0, 600))}</div>` : ''}
+        </div>`).join('')}</div>
+    </div>` : '';
+  const excludedHtml = excludedFiles.length ? `
+    <div class="dash-card">
+      <div class="dash-card-title">File dikecualikan (${excludedFiles.length}) · per alasan</div>
+      <div class="dash-card-sub">Buka untuk melihat kenapa file tidak masuk bundle — oversize / ekstensi / private / binary.</div>
+      <details><summary style="cursor:pointer">Tampilkan daftar</summary>
+      <div class="findings-list">${excludedFiles.slice(0, 50).map((e) => `
+        <div class="finding-card"><code>${esc(e.path || '(tanpa path)')}</code>
+          <span class="pill">${esc(e.reason || 'unknown')}</span>
+          ${e.size ? `<span class="pill">${(e.size/1000).toFixed(0)} KB${e.limit_kb ? ' > ' + e.limit_kb + ' KB' : ''}</span>` : ''}
+          ${e.ext ? `<span class="pill">${esc(e.ext)}</span>` : ''}
+        </div>`).join('')}${excludedFiles.length > 50 ? `<div class="empty-sub">… dan ${excludedFiles.length - 50} lainnya</div>` : ''}</div>
+      </details>
+    </div>` : (source.excluded ? `<div class="dash-card"><div class="dash-card-title">File dikecualikan (${source.excluded})</div><div class="empty-sub">Rincian per file tidak tersedia untuk run lama.</div></div>` : '');
   const findingHtml = findings.length ? findings.map((d) => `
     <div class="finding-card">
       <div class="finding-head">
@@ -1526,10 +1584,13 @@ function renderCodeAudit(view) {
   $('ff-content').innerHTML = `
     <div class="flow-detail-cards">
       <div class="card"><div class="label">Source</div><div class="value" style="font-size:14px">${esc(source.name || view.target[0] || '-')}</div><div class="sub">${source.files || 0} file teks · ${source.excluded || 0} dikecualikan</div></div>
-      <div class="card"><div class="label">Status</div><div class="value" style="font-size:14px">${esc(view.status)}</div><div class="sub">${esc(progress.node || view.workflow_phase || '')}</div></div>
-      <div class="card"><div class="label">Iterasi</div><div class="value">${view.iteration || 0}/${view.max_iterations || 0}</div><div class="sub">${view.stop_reason ? 'stop: ' + esc(view.stop_reason) : 'audit statis'}</div></div>
-      <div class="card"><div class="label">Temuan</div><div class="value">${findings.length}</div><div class="sub">model-assessed, bukan verifikasi dinamis</div></div>
+      <div class="card"><div class="label">Status</div><div class="value" style="font-size:14px">${esc(view.status)}${waiting ? ' ⏳' : ''}</div><div class="sub">${waiting ? 'menunggu model … ' + Math.round(elapsed || 0) + 's' : esc(progress.node || view.workflow_phase || '')}</div></div>
+      <div class="card"><div class="label">Iterasi</div><div class="value">${view.iteration || 0}/${view.max_iterations || 0}</div><div class="sub">${view.stop_reason ? 'stop: ' + esc(view.stop_reason) : (progress.event ? esc(progress.event.slice(0, 80)) : 'audit statis')}</div></div>
+      <div class="card"><div class="label">Temuan</div><div class="value">${findings.length}</div><div class="sub">${scanner.length} verified · model-assessed, bukan verifikasi dinamis</div></div>
     </div>
+    ${waiting ? `<div class="dash-card"><div class="dash-card-title">⏳ menunggu model …</div><div class="dash-card-sub">${esc(progress.event || 'mengirim prompt ke provider')} · ${Math.round(elapsed || 0)}s · token request ${progress.tokens_request ? Number(progress.tokens_request).toLocaleString() : '-'}</div></div>` : ''}
+    ${scannerHtml}
+    ${excludedHtml}
     <div class="dash-card">
       <div class="dash-card-title">${esc(report.title || 'Audit kode')}</div>
       <div class="dash-card-sub">${esc(report.executive_summary || 'Model membaca source yang diunggah; kode tidak dieksekusi.')}</div>

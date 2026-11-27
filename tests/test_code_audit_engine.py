@@ -1,7 +1,12 @@
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
+
+# determinism: scanner pre-pass is exercised separately in test_scanner;
+# engine tests count observations and must not gain a synthetic row.
+os.environ['ADAPTIX_NO_SCANNER'] = '1'
 
 from src.adaptix.code_audit.engine import _message_payload, run_audit
 from src.adaptix.code_audit.schema import Action

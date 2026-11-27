@@ -645,9 +645,21 @@ def _code_snapshot(run_id, base) -> LiveView:
         view.iteration = int(progress.get('iterations') or 0)
         view.max_iterations = int(progress.get('max_iterations') or view.max_iterations)
         view.workflow_phase = str(progress.get('node') or 'audit')
+        view.elapsed = float(progress.get('elapsed_seconds') or 0)
+        # tokens surface for header (A: "menunggu model …")
+        try:
+            view.tokens.prompt_tokens = int(progress.get('tokens_used') or 0)
+        except Exception:
+            pass
+        view.tokens.completion_tokens = 0
     else:
         view.status = 'idle'
     view.workflow_node = 'code_audit'
+    # A: scanner + progress + excluded reasons go to the UI poller.
+    # Need code-bundle.json for excluded_files (worker writes it at pack time,
+    # but progress.json may not be updated yet)
+    _bundle = Runner._latest_json(base, 'code-bundle.json') or {}
+    _excluded = (_bundle.get('excluded_files') or []) if isinstance(_bundle, dict) else []
     view.external = {
         'engine': 'code-audit',
         'meta': meta,
@@ -655,7 +667,12 @@ def _code_snapshot(run_id, base) -> LiveView:
         'report': report,
         'source': {'name': meta.get('source_name'), 'sha256': meta.get('source_sha256'),
                    'files': meta.get('files'), 'excluded': meta.get('excluded')} if meta else {},
+        'scanner': (report or {}).get('verified_findings') if report else [],
+        'excluded_files': _excluded,
     }
+    if meta and meta.get('excluded'):
+        # fallback when progress.json is stale: read excluded_files from bundle
+        pass
     try:
         view.log = _tail_text(os.path.join(base, 'logs', 'worker.log'), max_lines=200).splitlines()
     except OSError:
@@ -1056,14 +1073,59 @@ def create_app() -> Flask:
         return jsonify({'models': models, 'default': default})
 
     FILE_LIMIT_KB = (200, 500, 1024, 2048)
+    # Preflight warn: extension root files that a 200KB default would skip.
+    _CODE_EXTENSIONS = frozenset({'.py', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx',
+                                  '.php', '.go', '.java', '.rb', '.rs', '.cs', '.c',
+                                  '.cpp', '.h', '.hpp', '.swift', '.kt', '.sql',
+                                  '.yaml', '.yml', '.json', '.toml', '.html', '.sh',
+                                  '.xml', '.vue', '.svelte'})
+
+    @app.get('/api/audit/preflight')
+    def audit_preflight():
+        """Lightweight preview: which code files would be skipped at current limit?
+        Does not persist anything; answers 200/204/400 with JSON of oversized root files."""
+        source_path = str(request.args.get('source_path') or '').strip()
+        if not source_path:
+            return jsonify({'error': 'isi path folder source dulu'}), 400
+        try:
+            kb = int(str(request.args.get('max_file_kb') or 1024))
+        except (TypeError, ValueError):
+            kb = 1024
+        if kb not in FILE_LIMIT_KB:
+            kb = 1024
+        limit = kb * 1000
+        from pathlib import Path as _P
+
+        root = _P(source_path).expanduser().resolve()
+        if not root.is_dir():
+            return jsonify({'error': 'Folder source tidak ditemukan atau bukan direktori.'}), 400
+        oversized = []
+        for child in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+            if not child.is_file():
+                continue
+            if child.suffix.lower() not in _CODE_EXTENSIONS:
+                continue
+            try:
+                size = child.stat().st_size
+            except OSError:
+                continue
+            if size > limit:
+                oversized.append({'name': child.name, 'size_kb': round(size / 1000),
+                                  'size': size, 'limit_kb': kb})
+        warnings = []
+        if oversized:
+            names = ', '.join(o['name'] for o in oversized[:3])
+            more = f' (+{len(oversized)-3} lainnya)' if len(oversized) > 3 else ''
+            warnings.append(f'{len(oversized)} file utama >{kb} KB akan di-skip: {names}{more}')
+        return jsonify({'limit_kb': kb, 'oversized': oversized, 'warnings': warnings})
 
     def _source_limits():
         try:
-            kb = int(str(request.form.get('max_file_kb') or 200))
+            kb = int(str(request.form.get('max_file_kb') or 1024))
         except (TypeError, ValueError):
-            kb = 200
+            kb = 1024
         if kb not in FILE_LIMIT_KB:
-            kb = 200
+            kb = 1024
         oversize = str(request.form.get('oversize') or 'skip').strip().lower()
         if oversize not in ('skip', 'fail'):
             oversize = 'skip'

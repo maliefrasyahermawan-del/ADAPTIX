@@ -109,7 +109,9 @@ def start_code(runner, instruction, archive, filename, model, budgets, *, source
         'engine': 'code', 'audit_kind': 'code', 'source_kind': source_kind,
         'source_name': filename, 'source_path': str(bundle.get('source_path') or ''),
         'source_sha256': bundle['sha256'], 'files': len(bundle['files']),
-        'excluded': bundle['excluded'], 'instruction': instruction,
+        'excluded': bundle['excluded'],
+        'excluded_files': bundle.get('excluded_files', []),
+        'instruction': instruction,
         'model': model, 'budgets': budgets, 'source_limits': limits,
         'auto_patch': bool(auto_patch), 'created': time.time(),
     }

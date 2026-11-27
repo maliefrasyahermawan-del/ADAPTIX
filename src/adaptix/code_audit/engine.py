@@ -106,6 +106,8 @@ def _append(path: Path, row):
 
 
 def _progress(run_dir: Path, state):
+    # A: heartbeat includes live counters so the UI poller never shows a stale
+    # 0/8 while the provider is thinking; elapsed comes from run_started_at.
     _write_json(run_dir / 'code-progress.json', {
         'status': state.get('status') or 'running',
         'node': state.get('node') or 'audit',
@@ -117,6 +119,12 @@ def _progress(run_dir: Path, state):
         'model': state.get('model', ''),
         'stop_reason': state.get('stop_reason'),
         'error': state.get('error', ''),
+        'tokens_used': state.get('tokens_used', 0),
+        'tokens_request': state.get('tokens_request', 0),
+        'elapsed_seconds': round(time.time() - state.get('run_started_at', time.time()), 1)
+        if state.get('run_started_at') else 0,
+        'waiting_provider': bool(state.get('waiting_provider')),
+        'scanner_findings': len(state.get('scanner_findings', []) or []),
     })
 
 
@@ -455,6 +463,15 @@ def _patch_markdown(patches):
 
 
 def _write_report(run_dir: Path, report, state, patches=None):
+    # C: deterministic findings carry verification_status=verified so the
+    # report window separates scanner proof from LLM assessment.
+    verified = []
+    if state.get('scanner_findings'):
+        for row in state['scanner_findings']:
+            verified.append(dict(row, verification_status='verified',
+                                 independently_verified=True))
+    report = dict(report)
+    report['findings'] = list(report.get('findings') or []) + verified
     markdown = REPORT_MARKDOWN.format(
         title=report['title'], executive_summary=report['executive_summary'],
         methodology=report['methodology'], limitations=report['limitations'],
@@ -477,7 +494,7 @@ def _write_report(run_dir: Path, report, state, patches=None):
         'executive_summary': report['executive_summary'],
         'methodology': report['methodology'],
         'findings': report['findings'],
-        'verified_findings': [],
+        'verified_findings': verified,
         'external_findings': report['findings'],
         'limitations': report['limitations'],
         'next_steps': report['next_steps'],
@@ -510,12 +527,37 @@ def run_audit(run_dir, instruction, *, model, bundle, time_budget=900,
     """Run one bounded static audit. Returns the final state and optionally a report."""
     run_dir = Path(run_dir)
     deadline = time.time() + max(1, int(time_budget))
+    # C: deterministic scanner pass first (bandit/semgrep/osv/gitleaks
+    # subprocess fallbacks) — its verified findings are in the payload so
+    # the LLM does not have to discover them from scratch.
+    # ADAPTIX_NO_SCANNER=1 disables the pre-pass (used by unit tests).
+    scanner_findings = []
+    if os.getenv('ADAPTIX_NO_SCANNER', '').strip() not in ('1', 'true', 'yes'):
+        try:
+            from src.adaptix.code_audit import scanner as _scanner
+            scanner_findings = _scanner.scan_bundle(bundle)
+        except Exception:
+            scanner_findings = []
     state = {
         'objective': instruction, 'model': model, 'source_name': bundle.get('name') or 'source.zip',
         'observations': [], 'notes': '', 'feedback': '', 'iterations': 0,
         'max_iterations': max(1, int(max_iterations)), 'token_budget': max(1000, int(token_budget)),
-        'tokens_used': 0, 'status': 'running', 'node': 'plan', 'stop_reason': None, 'error': '',
+        'tokens_used': 0, 'tokens_request': 0, 'status': 'running', 'node': 'plan',
+        'stop_reason': None, 'error': '', 'run_started_at': time.time(),
+        'waiting_provider': False, 'scanner_findings': scanner_findings,
     }
+    # Seed the first LLM turn with the scanner summary so the model starts
+    # from verified candidates instead of blind list_source.
+    if scanner_findings:
+        try:
+            from src.adaptix.code_audit.scanner import observation_from_findings as _scanner_observation
+            from src.adaptix.code_audit.scanner import note_from_findings as _scanner_note
+        except Exception:
+            _scanner_observation = None
+            _scanner_note = None
+        if _scanner_observation:
+            state['observations'].append(_scanner_observation(scanner_findings, bundle))
+            state['notes'] = _scanner_note(scanner_findings) if _scanner_note else ''
     system_text = SYSTEM.replace('{schema}', _schema_text())
     if auto_patch:
         system_text += PATCH_HINT
@@ -546,30 +588,55 @@ def run_audit(run_dir, instruction, *, model, bundle, time_budget=900,
             break
         state['iterations'] += 1
         state['node'] = 'decide'
+        state['tokens_request'] = estimate + output_tokens
+        state['waiting_provider'] = True
+        state['event'] = f'menunggu model … (estimasi {state["tokens_request"]:,} token)'
         _progress(run_dir, state)
         response = None
         provider_error = None
-        for attempt in range(1, TRANSIENT_RETRY_LIMIT + 2):
-            try:
-                response = _provider_call(
-                    messages, model=model, api_base=api_base, api_key=api_key,
-                    max_tokens=output_tokens,
-                    timeout=min(180, max(1, deadline - time.time())), call=call)
-                break
-            except Exception as exc:
-                provider_error = exc
-                if attempt > TRANSIENT_RETRY_LIMIT or not _is_transient_provider_error(exc):
+        call_started = time.time()
+        # heartbeat thread: rewrite progress every 1s so UI shows live elapsed
+        # while _provider_call blocks on the network.
+        import threading as _threading
+        _hb_stop = _threading.Event()
+
+        def _heartbeat():
+            while not _hb_stop.wait(1.0):
+                try:
+                    _progress(run_dir, state)
+                except Exception:
                     break
-                base = float(os.getenv('ADAPTIX_PROVIDER_RETRY_DELAY', '2'))
-                delay = min(base * (2 ** (attempt - 1)), max(0.0, deadline - time.time() - 1))
-                if delay <= 0:
+
+        _hb = _threading.Thread(target=_heartbeat, daemon=True)
+        _hb.start()
+        try:
+            for attempt in range(1, TRANSIENT_RETRY_LIMIT + 2):
+                try:
+                    response = _provider_call(
+                        messages, model=model, api_base=api_base, api_key=api_key,
+                        max_tokens=output_tokens,
+                        timeout=min(180, max(1, deadline - time.time())), call=call)
                     break
-                state['error'] = (f'Percobaan {attempt}/{TRANSIENT_RETRY_LIMIT + 1} gagal '
-                                  f'({type(exc).__name__}); mencoba ulang.')
-                _progress(run_dir, state)
-                _activity(run_dir, 'audit', state['source_name'], 'retrying',
-                          f'{type(exc).__name__}: {exc}'[:200])
-                time.sleep(delay)
+                except Exception as exc:
+                    provider_error = exc
+                    if attempt > TRANSIENT_RETRY_LIMIT or not _is_transient_provider_error(exc):
+                        break
+                    base = float(os.getenv('ADAPTIX_PROVIDER_RETRY_DELAY', '2'))
+                    delay = min(base * (2 ** (attempt - 1)), max(0.0, deadline - time.time() - 1))
+                    if delay <= 0:
+                        break
+                    state['error'] = (f'Percobaan {attempt}/{TRANSIENT_RETRY_LIMIT + 1} gagal '
+                                      f'({type(exc).__name__}); mencoba ulang.')
+                    _progress(run_dir, state)
+                    _activity(run_dir, 'audit', state['source_name'], 'retrying',
+                              f'{type(exc).__name__}: {exc}'[:200])
+                    time.sleep(delay)
+        finally:
+            _hb_stop.set()
+            _hb.join(timeout=2.0)
+            state['waiting_provider'] = False
+            state['event'] = f'model membalas dalam {round(time.time() - call_started)}s'
+            _progress(run_dir, state)
         if response is None:
             exc = provider_error or RuntimeError('provider returned no response')
             state.update(status='completed_with_errors',
