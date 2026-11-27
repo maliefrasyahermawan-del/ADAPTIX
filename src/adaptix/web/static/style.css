@@ -477,28 +477,28 @@ svg { display: block; }
 .set-empty-title { font-size: 15px; font-weight: 600; color: var(--text-2); margin-bottom: 5px; }
 .set-empty-sub { font-size: 13.5px; line-height: 1.6; }
 .set-token-list { display: flex; flex-direction: column; margin-top: 14px; }
-.set-token-row { display: flex; align-items: center; gap: 14px; padding: 14px 2px; border-top: 1px solid #f1f1f1; }
+.set-token-row { display: flex; align-items: center; gap: 14px; padding: 14px 2px; border-top: 1px solid var(--border-soft); }
 .set-token-row:first-child { border-top: none; }
 .set-token-main { flex: 1; min-width: 0; }
-.set-token-name { font-size: 14.5px; font-weight: 600; color: #18181b; display: flex; align-items: center; gap: 8px; }
-.set-token-meta { font-size: 12.5px; color: #8a8a8a; font-family: Consolas, monospace; margin-top: 4px;
+.set-token-name { font-size: 14.5px; font-weight: 600; color: var(--text-strong); display: flex; align-items: center; gap: 8px; }
+.set-token-meta { font-size: 12.5px; color: var(--text-dim); font-family: Consolas, monospace; margin-top: 4px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .set-token-actions { display: flex; gap: 8px; flex: none; }
 .set-token-actions .set-btn:disabled { opacity: .45; cursor: default; }
 .set-badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
-  background: #f4f4f5; color: #52525b; }
-.set-badge.saved { background: #dcfce7; color: #166534; }
-.set-badge.env { background: #e0f2fe; color: #075985; }
+  background: var(--surface-2); color: var(--text-dim); }
+.set-badge.saved { background: var(--ok-bg); color: var(--ok-fg); }
+.set-badge.env { background: var(--accent-bg); color: var(--accent); }
 .set-token-form { display: grid; gap: 12px; margin-top: 16px; padding: 16px;
-  border: 1px solid #ececec; border-radius: 12px; background: #fafafa; }
+  border: 1px solid var(--border-soft); border-radius: 12px; background: var(--surface-2); }
 .set-token-form .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
 .set-token-form .row > label { flex: 1; min-width: 240px; display: flex; flex-direction: column;
-  gap: 6px; font-size: 12.5px; color: #71717a; }
-.set-token-form select, .set-token-form input { border: 1px solid #e2e2e2; border-radius: 8px;
-  padding: 9px 11px; font-size: 13.5px; background: #fff; }
+  gap: 6px; font-size: 12.5px; color: var(--text-dim); }
+.set-token-form select, .set-token-form input { border: 1px solid var(--border); border-radius: 8px;
+  padding: 9px 11px; font-size: 13.5px; background: var(--surface); color: var(--text); }
 .set-token-form .token-form-actions { align-items: center; }
 .set-token-status { font-size: 12.5px; }
-.set-token-status.err { color: #b91c1c; }
+.set-token-status.err { color: var(--crit); }
 
 /* --------------------------------------------------- opencode integration --- */
 .engine-picker { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 10px; }
@@ -745,3 +745,10 @@ html[data-theme="dark"] .settings-topbar { border-color: var(--border); }
 html[data-theme="dark"] input::placeholder,
 html[data-theme="dark"] textarea::placeholder { color: var(--text-dim); }
 html[data-theme="dark"] .flows-table th { background: var(--surface); }
+
+/* File-limit row: keep the checkbox and its label on one line, aligned with the
+   select's control edge instead of wrapping into the 120px numeric column. */
+.field-row.file-limit-row { grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
+.file-limit-row .check-label { align-self: end; white-space: nowrap; padding-bottom: 9px; }
+/* .check-label sets display:flex !important later in the file; make .hidden win. */
+.check-label.hidden { display: none !important; }
