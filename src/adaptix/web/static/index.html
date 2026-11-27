@@ -294,7 +294,7 @@
                   <input id="b-code-iterations" type="text" value="8">
                 </label>
               </div>
-              <div class="field-row">
+              <div class="field-row file-limit-row">
                 <label class="field">batas file teks
                   <select id="b-code-file-limit">
                     <option value="200">200 KB (default)</option>
@@ -303,8 +303,8 @@
                     <option value="2048">2 MB</option>
                   </select>
                 </label>
-                <label class="check-label"><input id="b-code-skip-large" type="checkbox" checked>
-                  Lewati file di atas batas (jangan gagalkan audit)</label>
+                <label class="check-label" title="File di atas batas dilewati dan dihitung sebagai dikecualikan; audit tetap berjalan.">
+                  <input id="b-code-skip-large" type="checkbox" checked> Lewati file besar</label>
               </div>
               <div class="code-note">ZIP maks 4 MB, atau folder lokal di mesin ADAPTIX (maks 300 file teks,
                 total 8 MB). File yang lebih besar dari batas bisa dilewati dan dihitung sebagai
