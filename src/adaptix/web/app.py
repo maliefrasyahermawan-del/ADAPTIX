@@ -24,18 +24,28 @@ from src.adaptix.code_audit.runner import start_code
 from src.adaptix.config import ROOT, load_dotenv
 from src.adaptix.opencode_runner import (DEFAULT_OPENCODE_MODEL, TERMINALS, opencode_models,
                                           peek_opencode_models)
+from src.adaptix import provider_keys
 from src.adaptix.ui.runner import Runner, configured_model, env_budget, resumable_runs
 from src.adaptix.ui.state import LiveView, view_from_report, view_from_state
 
 load_dotenv()
+provider_keys.apply_saved_to_env()
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), 'static')
 CWD = os.getcwd()
 
 
+def _preferred_model() -> str:
+    """Model chosen in Settings → API Tokens, else the `.env` model."""
+    for row in provider_keys.status_rows():
+        if row['key_set'] and row['model_saved']:
+            return row['model']
+    return configured_model()
+
+
 def _default_view() -> LiveView:
     view = LiveView()
-    view.model = configured_model()
+    view.model = _preferred_model()
     view.context_tokens = int(os.getenv('ADAPTIX_MODEL_CONTEXT_TOKENS') or 32768)
     view.time_budget = env_budget('ADAPTIX_TIME_BUDGET', 2400)
     view.tool_budget = env_budget('ADAPTIX_TOOL_CALL_BUDGET', 90)
@@ -763,6 +773,7 @@ def create_app() -> Flask:
                 'timeout': int(timeout) if timeout.isdigit() else '',
                 'reasoning_effort': os.getenv('ADAPTIX_REASONING_EFFORT') or 'model default',
             },
+            'tokens': provider_keys.status_rows(),
             'prompts': [
                 {'name': 'Planner',
                  'purpose': 'Chooses the next action and evidence-grounded hypotheses on every pass.',
@@ -795,6 +806,42 @@ def create_app() -> Flask:
             'display_name': data['display_name'], 'email': data['email'],
             'created_at': data['created_at'], 'kind': 'Local account',
         }})
+
+    @app.get('/api/settings/tokens')
+    def tokens_get():
+        return jsonify({'tokens': provider_keys.status_rows()})
+
+    @app.post('/api/settings/tokens')
+    def tokens_save():
+        body = request.get_json(force=True, silent=True) or {}
+        provider = str(body.get('provider') or '').strip().lower()
+        if not provider_keys.valid_provider(provider):
+            return jsonify({'error': 'provider tidak dikenal'}), 400
+        try:
+            provider_keys.set_token(provider, body.get('token'), body.get('model'))
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
+        return jsonify({'tokens': provider_keys.status_rows()})
+
+    @app.get('/api/settings/tokens/<provider>/models')
+    def tokens_models(provider):
+        if not provider_keys.valid_provider(provider):
+            return jsonify({'error': 'provider tidak dikenal'}), 404
+        return jsonify(provider_keys.live_models(provider))
+
+    @app.delete('/api/settings/tokens/<provider>')
+    def tokens_delete(provider):
+        if not provider_keys.valid_provider(provider):
+            return jsonify({'error': 'provider tidak dikenal'}), 404
+        provider_keys.delete_token(provider)
+        return jsonify({'tokens': provider_keys.status_rows()})
+
+    @app.post('/api/settings/tokens/<provider>/test')
+    def tokens_test(provider):
+        if not provider_keys.valid_provider(provider):
+            return jsonify({'error': 'provider tidak dikenal'}), 404
+        result = provider_keys.test_token(provider)
+        return jsonify(result), (200 if result.get('ok') else 400)
 
     @app.get('/api/status')
     def status():
@@ -992,10 +1039,30 @@ def create_app() -> Flask:
     def audit_model_list():
         """LiteLLM model choices for the static code audit."""
         configured = (os.getenv('ADAPTIX_LLM_MODEL') or '').strip()
-        models = [m for m in (configured, 'deepseek/deepseek-chat',
+        rows = [row for row in provider_keys.status_rows() if row['key_set']]
+        provider_models = []
+        for row in rows:
+            provider_models.append(row['model'])
+            provider_models.extend(m for m in row['models'] if m != row['model'])
+        models = [m for m in (configured, *provider_models, 'deepseek/deepseek-chat',
                               'deepseek/deepseek-reasoner', 'ollama_chat/qwen3:14b') if m]
         models = list(dict.fromkeys(models))
-        return jsonify({'models': models, 'default': configured or models[0]})
+        default = _preferred_model() or (rows[0]['model'] if rows else models[0])
+        return jsonify({'models': models, 'default': default})
+
+    FILE_LIMIT_KB = (200, 500, 1024, 2048)
+
+    def _source_limits():
+        try:
+            kb = int(str(request.form.get('max_file_kb') or 200))
+        except (TypeError, ValueError):
+            kb = 200
+        if kb not in FILE_LIMIT_KB:
+            kb = 200
+        oversize = str(request.form.get('oversize') or 'skip').strip().lower()
+        if oversize not in ('skip', 'fail'):
+            oversize = 'skip'
+        return {'max_file': kb * 1000, 'oversize': oversize}
 
     @app.post('/api/audit/code')
     def audit_code():
@@ -1023,7 +1090,7 @@ def create_app() -> Flask:
         if len(instruction) > 12000:
             return jsonify({'error': 'tujuan audit maksimal 12000 karakter'}), 400
         model = (str(request.form.get('model') or '').strip()
-                 or os.getenv('ADAPTIX_LLM_MODEL') or 'ollama_chat/qwen3:14b')
+                 or _preferred_model() or 'ollama_chat/qwen3:14b')
         def _budget(name, default, low, high):
             try:
                 value = int(request.form.get(name) or default)
@@ -1035,13 +1102,15 @@ def create_app() -> Flask:
             'token_budget': _budget('token_budget', 50000, 1000, 2_000_000),
             'max_iterations': _budget('max_iterations', 8, 1, 30),
         }
+        limits = _source_limits()
         try:
             if source_path:
                 run_id = start_code(runner, instruction, None, os.path.basename(source_path),
                                     model, budgets, source_path=source_path,
-                                    auto_patch=auto_patch)
+                                    auto_patch=auto_patch, source_limits=limits)
             else:
-                run_id = start_code(runner, instruction, archive, filename, model, budgets)
+                run_id = start_code(runner, instruction, archive, filename, model, budgets,
+                                    source_limits=limits)
         except ValueError as exc:
             return jsonify({'error': str(exc)}), 400
         runner.engine = 'code'

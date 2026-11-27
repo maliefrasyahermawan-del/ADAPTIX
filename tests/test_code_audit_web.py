@@ -35,8 +35,9 @@ def test_upload_starts_code_engine(monkeypatch):
     client = webapp.create_app().test_client()
     calls = {}
 
-    def fake_start(runner, instruction, archive, filename, model, budgets):
-        calls.update(instruction=instruction, filename=filename, model=model, budgets=budgets)
+    def fake_start(runner, instruction, archive, filename, model, budgets, *, source_limits=None):
+        calls.update(instruction=instruction, filename=filename, model=model, budgets=budgets,
+                     source_limits=source_limits)
         runner.view.engine = 'code'
         runner.view.run_id = 'code-fake'
         runner.view.status = 'starting'
@@ -95,7 +96,7 @@ def test_folder_source_starts_code_engine(monkeypatch, tmp_path):
     calls = {}
 
     def fake_start(runner, instruction, archive, filename, model, budgets, *, source_path=None,
-                   auto_patch=False):
+                   auto_patch=False, source_limits=None):
         calls.update(archive=archive, filename=filename, source_path=source_path,
                      auto_patch=auto_patch, instruction=instruction, budgets=budgets)
         runner.view.engine = 'code'
@@ -134,7 +135,7 @@ def test_folder_auto_patch_flag_reaches_engine(monkeypatch, tmp_path):
     calls = {}
 
     def fake_start(runner, instruction, archive, filename, model, budgets, *, source_path=None,
-                   auto_patch=False):
+                   auto_patch=False, source_limits=None):
         calls.update(source_path=source_path, auto_patch=auto_patch)
         runner.view.engine = 'code'
         runner.view.run_id = 'code-fake'
@@ -152,6 +153,59 @@ def test_folder_auto_patch_flag_reaches_engine(monkeypatch, tmp_path):
     }, content_type='multipart/form-data')
     assert response.status_code == 200
     assert calls['auto_patch'] is True
+
+
+def test_file_limit_choices_reach_engine(monkeypatch, tmp_path):
+    monkeypatch.setattr(webapp, 'runner', webapp.Runner(webapp._default_view()))
+    client = webapp.create_app().test_client()
+    calls = {}
+
+    def fake_start(runner, instruction, archive, filename, model, budgets, *, source_path=None,
+                   auto_patch=False, source_limits=None):
+        calls.update(source_limits=source_limits)
+        runner.view.engine = 'code'
+        runner.view.run_id = 'code-fake'
+        runner.view.status = 'starting'
+        runner.view.target = [str(source_path)]
+        runner.view.model = model
+        runner.view.details = []
+        return 'code-fake'
+
+    monkeypatch.setattr(webapp, 'start_code', fake_start)
+    response = client.post('/api/audit/code', data={
+        'source_path': str(tmp_path),
+        'instruction': 'Audit folder',
+        'max_file_kb': '1024',
+        'oversize': 'fail',
+    }, content_type='multipart/form-data')
+    assert response.status_code == 200
+    assert calls['source_limits'] == {'max_file': 1_024_000, 'oversize': 'fail'}
+
+
+def test_file_limit_defaults_and_clamps(monkeypatch, tmp_path):
+    monkeypatch.setattr(webapp, 'runner', webapp.Runner(webapp._default_view()))
+    client = webapp.create_app().test_client()
+    calls = {}
+
+    def fake_start(runner, instruction, archive, filename, model, budgets, *, source_path=None,
+                   auto_patch=False, source_limits=None):
+        calls.update(source_limits=source_limits)
+        runner.view.engine = 'code'
+        runner.view.run_id = 'code-fake'
+        runner.view.status = 'starting'
+        runner.view.target = [str(source_path)]
+        runner.view.model = model
+        runner.view.details = []
+        return 'code-fake'
+
+    monkeypatch.setattr(webapp, 'start_code', fake_start)
+    client.post('/api/audit/code', data={
+        'source_path': str(tmp_path),
+        'instruction': 'Audit folder',
+        'max_file_kb': '9999',
+        'oversize': 'bogus',
+    }, content_type='multipart/form-data')
+    assert calls['source_limits'] == {'max_file': 200_000, 'oversize': 'skip'}
 
 
 def test_auto_patch_rejects_zip(monkeypatch):

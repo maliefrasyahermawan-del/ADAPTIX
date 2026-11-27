@@ -54,6 +54,25 @@ def test_rejects_oversized_file():
         unpack(_zip({'big.py': 'a' * 200_001}))
 
 
+def test_skips_oversized_file_when_oversize_is_skip():
+    bundle = unpack(_zip({'big.py': 'a' * 200_001, 'app.py': 'print(1)'}),
+                    oversize='skip')
+    assert set(bundle['files']) == {'app.py'}
+    assert bundle['excluded'] == 1
+
+
+def test_accepts_raised_per_file_limit():
+    bundle = unpack(_zip({'big.py': 'a' * 300_000}), max_file=500_000)
+    assert 'big.py' in bundle['files']
+
+
+def test_rejects_invalid_limit():
+    with pytest.raises(ValueError):
+        unpack(_zip({'app.py': 'print(1)'}), max_file=0)
+    with pytest.raises(ValueError):
+        unpack(_zip({'app.py': 'print(1)'}), oversize='ignore')
+
+
 def test_rejects_archive_without_text_source():
     with pytest.raises(ValueError):
         unpack(_zip({'image.png': b'\x89PNG'}))
@@ -76,6 +95,25 @@ def test_directory_bundle_reads_text_and_skips_private_entries(tmp_path):
     assert bundle['excluded'] == 2
     assert 'sk-abcdefghijklmnopqrstuvwxyz123456' not in bundle['files']['pkg/app.py']['text']
     assert '[REDACTED]' in bundle['files']['pkg/app.py']['text']
+
+
+def test_directory_bundle_skips_oversized_file(tmp_path):
+    from src.adaptix.code_audit.sources import directory_bundle
+    source = tmp_path / 'project'
+    (source / 'vendor').mkdir(parents=True)
+    (source / 'vendor' / 'bundle.min.js').write_text('a' * 200_001, encoding='utf-8')
+    (source / 'app.py').write_text('print(1)', encoding='utf-8')
+    bundle = directory_bundle(source, oversize='skip')
+    assert set(bundle['files']) == {'app.py'}
+    assert bundle['excluded'] == 1
+
+
+def test_directory_bundle_accepts_raised_per_file_limit(tmp_path):
+    from src.adaptix.code_audit.sources import directory_bundle
+    source = tmp_path / 'project'
+    source.mkdir()
+    (source / 'vendor.js').write_text('a' * 300_000, encoding='utf-8')
+    assert 'vendor.js' in directory_bundle(source, max_file=500_000)['files']
 
 
 def test_directory_bundle_rejects_missing_folder(tmp_path):

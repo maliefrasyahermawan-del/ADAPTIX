@@ -12,6 +12,7 @@ import sys
 import traceback
 from pathlib import Path
 
+from src.adaptix import provider_keys
 from src.adaptix.code_audit.engine import run_audit
 from src.adaptix.code_audit.sources import load_bundle
 from src.adaptix.config import ROOT, load_dotenv
@@ -35,8 +36,11 @@ def parse_args(argv=None):
 
 def main(argv=None):
     load_dotenv()
+    provider_keys.apply_saved_to_env()
     args = parse_args(argv)
     run_dir = Path(args.run_dir)
+    api_key, api_base = provider_keys.credentials_for(
+        args.model, args.api_base, args.api_key)
     try:
         bundle = load_bundle(run_dir)
         state = run_audit(
@@ -44,8 +48,8 @@ def main(argv=None):
             time_budget=args.time_budget, token_budget=args.token_budget,
             max_iterations=args.max_iterations,
             auto_patch=args.auto_patch,
-            api_base=args.api_base or os.getenv('ADAPTIX_API_BASE') or None,
-            api_key=args.api_key or os.getenv('ADAPTIX_API_KEY') or None,
+            api_base=api_base,
+            api_key=api_key,
         )
     except Exception as exc:
         traceback.print_exc()

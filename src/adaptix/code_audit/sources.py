@@ -20,7 +20,9 @@ from pathlib import Path, PurePosixPath
 MAX_ARCHIVE = 4_000_000
 MAX_TOTAL = 8_000_000
 MAX_FILE = 200_000
+MAX_FILE_LIMIT = 4_000_000
 MAX_FILES = 300
+OVERSIZE_MODES = ('fail', 'skip')
 
 EXTENSIONS = {
     '.py', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.php', '.go', '.java',
@@ -42,12 +44,34 @@ def redact(text: str) -> str:
     return _TOKEN_SECRET.sub('[REDACTED]', text)
 
 
-def unpack(raw: bytes) -> dict:
+def _checked_limits(max_file, max_files, max_total, oversize):
+    """Validate operator-tuned limits so a bad form value cannot disable the caps."""
+    if not isinstance(max_file, int) or not 1 <= max_file <= MAX_FILE_LIMIT:
+        raise ValueError(f'Batas ukuran file harus 1-{MAX_FILE_LIMIT // 1000} KB.')
+    if not isinstance(max_files, int) or not 1 <= max_files <= 10_000:
+        raise ValueError('Batas jumlah file tidak valid.')
+    if not isinstance(max_total, int) or not max_file <= max_total <= 64_000_000:
+        raise ValueError('Batas ukuran total tidak valid.')
+    if oversize not in OVERSIZE_MODES:
+        raise ValueError('Mode file besar harus "fail" atau "skip".')
+    return max_file, max_files, max_total, oversize
+
+
+def _too_big(max_file):
+    return f'Maksimal {max_file // 1000} KB per file teks.'
+
+
+def unpack(raw: bytes, *, max_file=MAX_FILE, max_files=MAX_FILES, max_total=MAX_TOTAL,
+           oversize='fail') -> dict:
     """Validate an uploaded ZIP and return sanitized text files.
 
     Every rejection is a ValueError the API can show to the operator. The archive
     is read in memory; nothing is written besides the resulting sanitized bundle.
+    ``oversize='skip'`` counts files above ``max_file`` as excluded instead of
+    rejecting the whole archive; ``'fail'`` keeps the original fail-closed default.
     """
+    max_file, max_files, max_total, oversize = _checked_limits(
+        max_file, max_files, max_total, oversize)
     if not isinstance(raw, bytes) or not 1 <= len(raw) <= MAX_ARCHIVE:
         raise ValueError('ZIP maksimal 4 MB.')
     files: dict[str, dict] = {}
@@ -77,13 +101,23 @@ def unpack(raw: bytes) -> dict:
                     continue
                 if name in files:
                     raise ValueError('Path file dalam ZIP berulang.')
-                if len(files) >= MAX_FILES or item.file_size > MAX_FILE:
-                    raise ValueError('Maksimal 300 file teks, masing-masing 200 KB.')
+                if len(files) >= max_files:
+                    raise ValueError(f'Maksimal {max_files} file teks.')
+                if item.file_size > max_file:
+                    if oversize == 'skip':
+                        excluded += 1
+                        continue
+                    raise ValueError(_too_big(max_file))
                 with archive.open(item) as stream:
-                    data = stream.read(MAX_FILE + 1)
+                    data = stream.read(max_file + 1)
+                if len(data) > max_file:
+                    if oversize == 'skip':
+                        excluded += 1
+                        continue
+                    raise ValueError(_too_big(max_file))
                 total += len(data)
-                if len(data) > MAX_FILE or total > MAX_TOTAL:
-                    raise ValueError('Ukuran source terurai maksimal 8 MB.')
+                if total > max_total:
+                    raise ValueError(f'Ukuran source terurai maksimal {max_total // 1_000_000} MB.')
                 try:
                     text = data.decode('utf-8')
                 except UnicodeError:
@@ -119,15 +153,19 @@ def _allowed_roots():
     return roots
 
 
-def directory_bundle(source_dir, *, name=None) -> dict:
+def directory_bundle(source_dir, *, name=None, max_file=MAX_FILE, max_files=MAX_FILES,
+                     max_total=MAX_TOTAL, oversize='fail') -> dict:
     """Read a local source folder into the same sanitized bundle shape as a ZIP.
 
     The folder is read-only: nothing is written, imported, or executed. Entries
     that a ZIP would reject (symlinks, private directories, binaries) are skipped
     and counted, while the same per-file/total/count limits are enforced. Set
     ``ADAPTIX_CODE_AUDIT_ROOTS`` (os.pathsep-separated) to confine which folders
-    the dashboard may read.
+    the dashboard may read. ``oversize='skip'`` counts files above ``max_file`` as
+    excluded instead of failing the run.
     """
+    max_file, max_files, max_total, oversize = _checked_limits(
+        max_file, max_files, max_total, oversize)
     source = Path(source_dir).expanduser().resolve()
     if not source.is_dir():
         raise ValueError('Folder source tidak ditemukan atau bukan direktori.')
@@ -150,15 +188,19 @@ def directory_bundle(source_dir, *, name=None) -> dict:
                 excluded += 1
                 continue
             try:
-                data = path.read_bytes()
+                with path.open('rb') as stream:
+                    data = stream.read(max_file + 1)
             except OSError:
                 excluded += 1
                 continue
-            if len(data) > MAX_FILE:
-                raise ValueError('Maksimal 200 KB per file teks.')
+            if len(data) > max_file:
+                if oversize == 'skip':
+                    excluded += 1
+                    continue
+                raise ValueError(_too_big(max_file))
             total += len(data)
-            if total > MAX_TOTAL:
-                raise ValueError('Ukuran source maksimal 8 MB.')
+            if total > max_total:
+                raise ValueError(f'Ukuran source maksimal {max_total // 1_000_000} MB.')
             try:
                 text = data.decode('utf-8')
             except UnicodeError:
@@ -167,8 +209,8 @@ def directory_bundle(source_dir, *, name=None) -> dict:
             if '\x00' in text:
                 excluded += 1
                 continue
-            if len(files) >= MAX_FILES:
-                raise ValueError('Maksimal 300 file teks.')
+            if len(files) >= max_files:
+                raise ValueError(f'Maksimal {max_files} file teks.')
             safe = redact(text)
             files[relative.as_posix()] = {
                 'text': safe,
@@ -211,15 +253,15 @@ def _persist_bundle(run_dir: Path, bundle: dict, name: str, *, kind: str,
     return bundle
 
 
-def write_bundle(run_dir: Path, raw: bytes, name: str) -> dict:
+def write_bundle(run_dir: Path, raw: bytes, name: str, **limits) -> dict:
     """Sanitize an upload and persist only the sanitized bundle (never the ZIP)."""
-    return _persist_bundle(run_dir, unpack(raw), name, kind='zip')
+    return _persist_bundle(run_dir, unpack(raw, **limits), name, kind='zip')
 
 
-def write_directory_bundle(run_dir: Path, source_dir, *, name=None) -> dict:
+def write_directory_bundle(run_dir: Path, source_dir, *, name=None, **limits) -> dict:
     """Sanitize a local folder and persist only the text bundle."""
     source = Path(source_dir).expanduser().resolve()
-    bundle = directory_bundle(source, name=name)
+    bundle = directory_bundle(source, name=name, **limits)
     return _persist_bundle(run_dir, bundle, bundle['name'], kind='folder',
                            source_path=str(source))
 

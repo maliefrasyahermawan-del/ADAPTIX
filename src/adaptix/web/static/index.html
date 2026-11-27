@@ -240,7 +240,8 @@
                 <label class="field">tool calls <input id="b-tools" type="text" value="90"></label>
                 <label class="field">tokens <input id="b-tokens" type="text" value="5000000"></label>
               </div>
-              <label class="field">model <input id="b-model" type="text" placeholder="(from .env)"></label>
+              <label class="field">model <input id="b-model" type="text" list="b-model-list" placeholder="(from .env / API Tokens)"></label>
+              <datalist id="b-model-list"></datalist>
               <label class="field">identity file <select id="b-identity"><option value="">(none)</option></select></label>
               <label class="field">knowledge notes <select id="b-knowledge" multiple size="3"></select></label>
             </div>
@@ -293,8 +294,22 @@
                   <input id="b-code-iterations" type="text" value="8">
                 </label>
               </div>
+              <div class="field-row">
+                <label class="field">batas file teks
+                  <select id="b-code-file-limit">
+                    <option value="200">200 KB (default)</option>
+                    <option value="500">500 KB</option>
+                    <option value="1024">1 MB</option>
+                    <option value="2048">2 MB</option>
+                  </select>
+                </label>
+                <label class="check-label"><input id="b-code-skip-large" type="checkbox" checked>
+                  Lewati file di atas batas (jangan gagalkan audit)</label>
+              </div>
               <div class="code-note">ZIP maks 4 MB, atau folder lokal di mesin ADAPTIX (maks 300 file teks,
-                masing-masing 200 KB). Source dibaca read-only dan tidak dieksekusi. Patch otomatis (opsional)
+                total 8 MB). File yang lebih besar dari batas bisa dilewati dan dihitung sebagai
+                "dikecualikan" pada laporan, atau batasnya dinaikkan lewat dropdown di atas.
+                Source dibaca read-only dan tidak dieksekusi. Patch otomatis (opsional)
                 membuat backup folder di folder induknya sebelum menulis, lalu diff disimpan di artifacts run;
                 snippet yang tidak cocok persis akan dilewati.</div>
             </div>

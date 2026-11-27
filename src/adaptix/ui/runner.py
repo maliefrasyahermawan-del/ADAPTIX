@@ -170,7 +170,9 @@ class Runner:
         self.finished.clear()
 
         def work():
-            env = dict(os.environ, PYTHONUNBUFFERED='1', COLUMNS='100')
+            from src.adaptix import provider_keys
+            env = provider_keys.env_for_model(
+                self.view.model, dict(os.environ, PYTHONUNBUFFERED='1', COLUMNS='100'))
             try:
                 self.process = subprocess.Popen(argv, cwd=cwd, env=env,
                                                 stdout=subprocess.PIPE,

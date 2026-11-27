@@ -174,16 +174,20 @@ syncEngine();
 $('target').addEventListener('input', () => { $('target-opencode').value = $('target').value; });
 $('target-opencode').addEventListener('input', () => { $('target').value = $('target-opencode').value; });
 
-async function loadCodeModels() {
+async function loadCodeModels(keepSelection) {
   const select = $('b-code-model');
   if (!select) return;
+  const current = select.value;
   try {
     const res = await fetch('/api/audit/models');
     const data = await res.json();
     const models = data.models || [];
     select.innerHTML = '<option value="">(dari .env)</option>' +
       models.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
-    if (data.default) select.value = data.default;
+    if (keepSelection && current && models.includes(current)) select.value = current;
+    else if (data.default) select.value = data.default;
+    const list = $('b-model-list');
+    if (list) list.innerHTML = models.map((m) => `<option value="${esc(m)}"></option>`).join('');
     select.dataset.loaded = '1';
   } catch (e) { /* keep the env default */ }
 }
@@ -427,7 +431,14 @@ function renderProviders() {
       </div>
       ${settingRows([['Base URL', p.ollama_base]])}
     </div>
-    <div class="set-hint">Edit <code>.env</code> and restart <code>adaptix-web</code> to change these values.</div>`;
+    <div class="set-hint">Edit <code>.env</code> and restart <code>adaptix-web</code> to change these values.
+      Per-provider API keys (Gemini, Groq, DeepSeek, Grok, OpenRouter) are managed on the
+      <a href="#settings" data-open-tokens>API Tokens</a> page and take effect without a restart.</div>`;
+  const tokensLink = document.querySelector('[data-open-tokens]');
+  if (tokensLink) tokensLink.addEventListener('click', (event) => {
+    event.preventDefault();
+    setSettingsPage('tokens');
+  });
 }
 
 function renderPrompts() {
@@ -445,21 +456,225 @@ function renderPrompts() {
     '<div class="set-hint">Prompt text is compiled into the engine so a run\'s contract cannot drift from its validator. ADAPTIX has no editable prompt store.</div>';
 }
 
+let tokenFormOpen = false;
+let tokenFormProvider = '';
+
+function tokenRow(t) {
+  const badge = t.source === 'saved' ? 'saved' : (t.source === 'env' ? 'env' : '');
+  const badgeText = t.source === 'saved' ? 'web' : (t.source === 'env' ? '.env' : 'belum diset');
+  return `<div class="set-token-row">
+    <div class="set-token-main">
+      <div class="set-token-name">${esc(t.label)} <span class="set-badge ${badge}">${badgeText}</span></div>
+      <div class="set-token-meta">${esc(t.env)} · ${t.key_set ? esc(t.masked) : 'belum diset'} · ${esc(t.model)}</div>
+    </div>
+    <div class="set-token-actions">
+      <button class="set-btn" data-token-edit="${esc(t.id)}">${t.key_set ? 'Ubah' : 'Tambah'}</button>
+      <button class="set-btn" data-token-test="${esc(t.id)}" ${t.key_set ? '' : 'disabled'}>Tes</button>
+      <button class="set-btn" data-token-del="${esc(t.id)}" ${t.source === 'saved' ? '' : 'disabled'}>Hapus</button>
+    </div>
+  </div>`;
+}
+
+function tokenModelOptions(row) {
+  const models = (row.models || []).slice();
+  if (row.model && !models.includes(row.model)) models.unshift(row.model);
+  return models;
+}
+
+function tokenForm(rows) {
+  const selected = rows.find((t) => t.id === tokenFormProvider) || rows[0] || {};
+  const models = tokenModelOptions(selected);
+  const custom = selected.model && !(selected.catalog || []).includes(selected.model);
+  return `<div class="set-token-form">
+    <div class="row">
+      <label>Provider
+        <select id="token-provider">
+          ${rows.map((t) => `<option value="${esc(t.id)}" ${t.id === selected.id ? 'selected' : ''}>${esc(t.label)}</option>`).join('')}
+        </select>
+      </label>
+      <label>API key ${selected.key_set ? '<span class="set-badge saved">tersimpan</span>' : ''}
+        <input id="token-value" type="password" autocomplete="off" spellcheck="false"
+               placeholder="${selected.key_set ? 'biarkan kosong untuk mempertahankan token' : 'tempel API key ' + esc(selected.label || '')}">
+      </label>
+    </div>
+    <div class="row">
+      <label>Model
+        <select id="token-model">
+          ${models.map((m) => `<option value="${esc(m)}" ${(!custom && m === selected.model) ? 'selected' : ''}>${esc(m)}</option>`).join('')}
+          <option value="__custom__" ${custom ? 'selected' : ''}>model lain (ketik sendiri)…</option>
+        </select>
+      </label>
+      <label id="token-model-custom-row" class="${custom ? '' : 'hidden'}">Model kustom
+        <input id="token-model-custom" type="text" autocomplete="off" spellcheck="false"
+               placeholder="${esc(selected.prefix || '')}nama-model" value="${custom ? esc(selected.model) : ''}">
+      </label>
+    </div>
+    <div class="row token-form-actions">
+      <button class="set-btn" data-token-save>Simpan</button>
+      <button class="set-btn" data-token-cancel>Batal</button>
+      <button class="set-btn" data-token-load>Muat daftar model</button>
+      <a id="token-docs" class="set-hint" href="${esc(selected.docs || '#')}" target="_blank" rel="noreferrer">cara mendapatkan key</a>
+      <span id="token-status" class="set-token-status"></span>
+    </div>
+  </div>`;
+}
+
+function currentTokenRow() {
+  return (settingsData.tokens || []).find((t) => t.id === tokenFormProvider) || {};
+}
+
+function syncTokenModelRow() {
+  const select = $('token-model');
+  const row = $('token-model-custom-row');
+  if (!select || !row) return;
+  row.classList.toggle('hidden', select.value !== '__custom__');
+}
+
 function renderTokens() {
+  const rows = settingsData.tokens || [];
   $('settings-content').innerHTML = `
     <div class="set-card">
       <div class="set-card-head">
         <div>
           <div class="set-card-title">API tokens</div>
-          <div class="set-card-sub">Tokens for automating ADAPTIX over HTTP.</div>
+          <div class="set-card-sub">API key + model default per provider untuk engine ADAPTIX. Disimpan lokal di mesin ini; key hanya ditampilkan tersamar.</div>
         </div>
-        <button class="set-btn" disabled>+ New Token</button>
+        <button class="set-btn" data-token-new>+ New Token</button>
       </div>
-      <div class="set-empty">
-        <div class="set-empty-title">No API tokens</div>
-        <div class="set-empty-sub">The local web API listens on 127.0.0.1 and is unauthenticated by design, so there are no tokens to issue or revoke.</div>
-      </div>
+      ${rows.length ? `<div class="set-token-list">${rows.map(tokenRow).join('')}</div>` : `
+        <div class="set-empty">
+          <div class="set-empty-title">No API tokens</div>
+          <div class="set-empty-sub">Tambahkan key Gemini, Groq, DeepSeek, Grok (xAI), atau OpenRouter.</div>
+        </div>`}
+      ${tokenFormOpen ? tokenForm(rows) : ''}
+      <div class="set-note">Token yang disimpan langsung dipakai run berikutnya (tanpa restart). Lokasi:
+        <code>work/web_data/provider_tokens.json</code> (mode 0600). Nilai key tidak pernah dikirim balik ke browser.</div>
     </div>`;
+  bindTokenActions();
+}
+
+function bindTokenActions() {
+  document.querySelectorAll('[data-token-new]').forEach((b) => b.addEventListener('click', () => {
+    tokenFormProvider = ((settingsData.tokens || []).find((t) => !t.key_set) || {}).id || '';
+    tokenFormOpen = true;
+    renderTokens();
+  }));
+  document.querySelectorAll('[data-token-edit]').forEach((b) => b.addEventListener('click', () => {
+    tokenFormProvider = b.dataset.tokenEdit;
+    tokenFormOpen = true;
+    renderTokens();
+  }));
+  document.querySelectorAll('[data-token-cancel]').forEach((b) => b.addEventListener('click', () => {
+    tokenFormOpen = false;
+    renderTokens();
+  }));
+  const provider = $('token-provider');
+  if (provider) provider.addEventListener('change', () => {
+    tokenFormProvider = provider.value;
+    renderTokens();
+    const keyInput = $('token-value');
+    if (keyInput) keyInput.focus();
+  });
+  const modelSelect = $('token-model');
+  if (modelSelect) modelSelect.addEventListener('change', syncTokenModelRow);
+  document.querySelectorAll('[data-token-save]').forEach((b) => b.addEventListener('click', saveToken));
+  document.querySelectorAll('[data-token-load]').forEach((b) => b.addEventListener('click', loadTokenModels));
+  const input = $('token-value');
+  const customInput = $('token-model-custom');
+  [input, customInput].forEach((field) => {
+    if (!field) return;
+    field.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveToken(); });
+  });
+  if (input) input.focus();
+  document.querySelectorAll('[data-token-test]').forEach((b) => b.addEventListener('click', async () => {
+    const id = b.dataset.tokenTest;
+    b.disabled = true;
+    try {
+      const res = await fetch(`/api/settings/tokens/${encodeURIComponent(id)}/test`, { method: 'POST' });
+      const data = await res.json();
+      alert(`${id}: ${data.ok ? 'token valid' : 'token gagal'} — ${data.detail || ''}`);
+    } finally { b.disabled = false; }
+  }));
+  document.querySelectorAll('[data-token-del]').forEach((b) => b.addEventListener('click', async () => {
+    const id = b.dataset.tokenDel;
+    if (!confirm(`Hapus token ${id}?`)) return;
+    const res = await fetch(`/api/settings/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'gagal menghapus'); return; }
+    settingsData.tokens = data.tokens;
+    renderTokens();
+    loadCodeModels(true);
+  }));
+}
+
+async function loadTokenModels() {
+  const provider = tokenFormProvider;
+  const status = $('token-status');
+  const button = document.querySelector('[data-token-load]');
+  if (!provider || !status) return;
+  if (button) button.disabled = true;
+  status.className = 'set-token-status';
+  status.textContent = 'memuat daftar model…';
+  try {
+    const res = await fetch(`/api/settings/tokens/${encodeURIComponent(provider)}/models`);
+    const data = await res.json();
+    if (!res.ok) {
+      status.className = 'set-token-status err';
+      status.textContent = data.error || 'gagal memuat model';
+      return;
+    }
+    const select = $('token-model');
+    const current = select.value === '__custom__'
+      ? (($('token-model-custom') || {}).value || '').trim() : select.value;
+    const models = (data.models || []).slice();
+    if (!select) return;
+    select.innerHTML = models.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join('') +
+      '<option value="__custom__">model lain (ketik sendiri)…</option>';
+    if (current && models.includes(current)) {
+      select.value = current;
+    } else if (current) {
+      select.value = '__custom__';
+      if ($('token-model-custom')) $('token-model-custom').value = current;
+    }
+    const row = currentTokenRow();
+    if (row) {
+      row.models = models;
+      row.catalog = Array.from(new Set([...(row.catalog || []), ...models]));
+    }
+    syncTokenModelRow();
+    status.textContent = data.detail || '';
+  } catch (err) {
+    status.className = 'set-token-status err';
+    status.textContent = 'gagal memuat model';
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function saveToken() {
+  const provider = ($('token-provider') || {}).value || tokenFormProvider;
+  const token = (($('token-value') || {}).value || '').trim();
+  const selected = $('token-model');
+  let model = selected ? selected.value : '';
+  if (model === '__custom__') model = (($('token-model-custom') || {}).value || '').trim();
+  const status = $('token-status');
+  if (!token && !currentTokenRow().key_set) {
+    if (status) status.textContent = 'token masih kosong';
+    return;
+  }
+  const res = await fetch('/api/settings/tokens', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, token, model }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    if (status) { status.className = 'set-token-status err'; status.textContent = data.error || 'gagal menyimpan'; }
+    return;
+  }
+  settingsData.tokens = data.tokens;
+  tokenFormOpen = false;
+  renderTokens();
+  loadCodeModels(true);
 }
 
 async function loadVersion() {
@@ -1713,6 +1928,8 @@ $('start-btn').addEventListener('click', async () => {
     form.append('time_budget', $('b-time').value.trim() || '900');
     form.append('token_budget', $('b-tokens').value.trim() || '50000');
     form.append('max_iterations', $('b-code-iterations').value.trim() || '8');
+    form.append('max_file_kb', $('b-code-file-limit').value);
+    form.append('oversize', $('b-code-skip-large').checked ? 'skip' : 'fail');
     const res = await fetch('/api/audit/code', { method: 'POST', body: form });
     const data = await res.json();
     if (!res.ok) alert(data.error || 'could not start code audit');

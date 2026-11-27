@@ -78,8 +78,9 @@ def _apply_report(view, run_dir):
 
 
 def start_code(runner, instruction, archive, filename, model, budgets, *, source_path=None,
-               auto_patch=False):
+               auto_patch=False, source_limits=None):
     """Validate the source (ZIP or local folder), persist its sanitized bundle, start the worker."""
+    limits = dict(source_limits or {})
     run_id = time.strftime('code-%H%M%S')
     base = _run_dir(run_id)
     suffix = 1
@@ -90,12 +91,12 @@ def start_code(runner, instruction, archive, filename, model, budgets, *, source
     base.mkdir(parents=True, exist_ok=True)
     try:
         if source_path:
-            bundle = write_directory_bundle(base, source_path)
+            bundle = write_directory_bundle(base, source_path, **limits)
             source_kind = 'folder'
             display = bundle.get('source_path') or str(source_path)
             filename = bundle.get('name') or os.path.basename(str(source_path))
         else:
-            bundle = write_bundle(base, archive, filename)
+            bundle = write_bundle(base, archive, filename, **limits)
             source_kind = 'zip'
             display = filename
     except Exception:
@@ -109,8 +110,8 @@ def start_code(runner, instruction, archive, filename, model, budgets, *, source
         'source_name': filename, 'source_path': str(bundle.get('source_path') or ''),
         'source_sha256': bundle['sha256'], 'files': len(bundle['files']),
         'excluded': bundle['excluded'], 'instruction': instruction,
-        'model': model, 'budgets': budgets, 'auto_patch': bool(auto_patch),
-        'created': time.time(),
+        'model': model, 'budgets': budgets, 'source_limits': limits,
+        'auto_patch': bool(auto_patch), 'created': time.time(),
     }
     (base / 'code-meta.json').write_text(json.dumps(request, indent=2), encoding='utf-8')
     (base / 'code-request.json').write_text(
@@ -137,9 +138,13 @@ def start_code(runner, instruction, archive, filename, model, budgets, *, source
         'name': filename, 'kind': source_kind,
         'path': bundle.get('source_path') or '',
         'sha256': bundle['sha256'], 'files': len(bundle['files']),
-        'excluded': bundle['excluded']}, 'activity': []}
-    view.append(f'source: {display} · {source_kind} ({len(bundle["files"])} file teks, '
+        'excluded': bundle['excluded'], 'limits': limits}, 'activity': []}
+    view.append(f'source: {display} - {source_kind} ({len(bundle["files"])} file teks, '
                 f'{bundle["excluded"]} dikecualikan)')
+    if limits:
+        view.append('batas file: {} KB, file besar: {}'.format(
+            int(limits.get('max_file') or 200_000) // 1000,
+            'dilewati' if limits.get('oversize') == 'skip' else 'gagalkan audit'))
     if auto_patch:
         view.append('auto-patch: aktif (tulis ke folder sumber setelah laporan, dengan backup)')
     view.append(f'objective: {instruction[:160]}')
@@ -152,7 +157,8 @@ def start_code(runner, instruction, archive, filename, model, budgets, *, source
             '--max-iterations', str(int(budgets.get('max_iterations') or 8))]
     if auto_patch:
         argv.append('--auto-patch')
-    env = dict(os.environ, PYTHONUNBUFFERED='1')
+    from src.adaptix import provider_keys
+    env = provider_keys.env_for_model(model, dict(os.environ, PYTHONUNBUFFERED='1'))
     runner.process = subprocess.Popen(argv, cwd=str(ROOT), env=env,
                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                       text=True, bufsize=1)
