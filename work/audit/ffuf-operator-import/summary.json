@@ -1,6 +1,0 @@
-{
-  "label": "ffuf-operator-import",
-  "returncode": 1,
-  "elapsed_seconds": 269.57,
-  "log": "work/audit/ffuf-operator-import/pytest.log"
-}

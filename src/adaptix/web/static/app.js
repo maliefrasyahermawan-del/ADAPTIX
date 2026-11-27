@@ -14,6 +14,7 @@ const ICONS = {
   chevrons: '<svg viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg>',
   dashboard: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.6"/><rect x="14" y="3" width="7" height="7" rx="1.6"/><rect x="3" y="14" width="7" height="7" rx="1.6"/><rect x="14" y="14" width="7" height="7" rx="1.6"/></svg>',
   flows: '<svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="2.3"/><circle cx="6" cy="12" r="2.3"/><circle cx="18" cy="19" r="2.3"/><path d="M8.1 10.9 15.9 6.1M8.1 13.1l7.8 4.8"/></svg>',
+  chat: '<svg viewBox="0 0 24 24"><path d="M4 5h16a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H9l-5 5V7a2 2 0 0 1 2-2z"/></svg>',
   templates: '<svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg>',
   resources: '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
   knowledges: '<svg viewBox="0 0 24 24"><path d="M4 4v16M8 6v14M12 6v14M16 6l4 13"/></svg>',
@@ -31,21 +32,58 @@ const ICONS = {
   chip: '<svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2.5"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>',
   dollar: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v10"/><path d="M14.7 9.2c-.6-.8-1.6-1.2-2.7-1.2-1.6 0-2.8.9-2.8 2.1 0 2.9 5.6 1.4 5.6 4.3 0 1.3-1.3 2.2-2.9 2.2-1.2 0-2.2-.5-2.8-1.3"/></svg>',
   plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
+  sun: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/></svg>',
+  moon: '<svg viewBox="0 0 24 24"><path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z"/></svg>',
 };
 document.querySelectorAll('[data-icon]').forEach((el) => {
   el.innerHTML = ICONS[el.dataset.icon] || '';
 });
 
+// ---- light / dark theme ---------------------------------------------------
+const THEME_KEY = 'adaptix.theme';
+function applyTheme(theme) {
+  const dark = theme === 'dark';
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  const ico = document.getElementById('theme-toggle-ico');
+  if (ico) ico.innerHTML = ICONS[dark ? 'sun' : 'moon'] || '';
+  const btn = document.getElementById('theme-toggle');
+  if (btn) btn.title = dark ? 'Mode terang' : 'Mode gelap';
+  try { localStorage.setItem(THEME_KEY, theme); } catch (e) { /* private mode */ }
+}
+function currentTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+}
+$('theme-toggle').addEventListener('click', () => {
+  applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+});
+applyTheme(currentTheme());
+
 // ---------------------------------------------------------------- top nav ---
 const tabs = document.querySelectorAll('.nav-item');
 const panels = document.querySelectorAll('.panel');
+
+// A flow detail replaces the topbar + page panels. Leaving that view (top nav,
+// + New Flow, empty-state CTA) must undo it first, otherwise the stale flow
+// stays painted on top and the new tab looks "stuck" on the previous run.
+function closeFlowView() {
+  const full = $('flow-fullpage');
+  if (full) full.classList.add('hidden');
+  const topbar = document.querySelector('.topbar');
+  if (topbar) topbar.classList.remove('hidden');
+  panels.forEach((p) => p.classList.remove('hidden'));
+}
+
+function activateTab(tab) {
+  closeFlowView();
+  tabs.forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+  panels.forEach((p) => p.classList.toggle('active', p.id === 'panel-' + tab));
+}
+
 tabs.forEach((btn) => btn.addEventListener('click', () => {
-  tabs.forEach((b) => b.classList.remove('active'));
-  panels.forEach((p) => p.classList.remove('active'));
-  btn.classList.add('active');
-  document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
+  activateTab(btn.dataset.tab);
   if (btn.dataset.tab === 'dashboard') loadDashboard();
   if (btn.dataset.tab === 'flows') loadFlows();
+  if (btn.dataset.tab === 'chat') setTimeout(() => $('instruction').focus(), 60);
   if (btn.dataset.tab === 'templates') loadTemplates();
   if (btn.dataset.tab === 'resources') loadResources();
   if (btn.dataset.tab === 'knowledges') loadKnowledge();
@@ -55,10 +93,6 @@ if (location.hash && location.hash !== '#settings') {
   if (initial) initial.click();
 }
 
-$('budget-toggle').addEventListener('click', () => {
-  $('budget-panel').classList.toggle('hidden');
-});
-
 function hostOf(target) {
   try {
     return new URL(target.includes('://') ? target : 'http://' + target).hostname;
@@ -67,20 +101,56 @@ function hostOf(target) {
   }
 }
 
-function syncEngine() {
-  const engine = $('b-engine').value;
-  const opencode = engine === 'opencode';
-  const code = engine === 'code';
-  $('opencode-options').classList.toggle('hidden', !opencode);
-  $('code-options').classList.toggle('hidden', !code);
-  $('full-offensive-panel').classList.toggle('hidden', !opencode || !$('b-full-offensive').checked);
-  $('target').placeholder = code
-    ? 'Target tidak diperlukan untuk audit kode (pilih ZIP atau folder di bawah)'
-    : 'Target, e.g. http://127.0.0.1:3000';
-  if (opencode && !$('b-opencode-model').dataset.loaded) loadOpencodeModels();
-  if (code && !$('b-code-model').dataset.loaded) loadCodeModels();
-  if (code) syncCodeSource();
+const ENGINE_META = {
+  adaptix: { label: 'ADAPTIX', sub: 'Native agent' },
+  opencode: { label: 'OpenCode', sub: 'Pentester' },
+  code: { label: 'Code Audit', sub: 'ZIP / folder · static' },
+};
+let currentEngine = 'adaptix';
+
+function engineTarget() {
+  return currentEngine === 'opencode' ? 'target-opencode' : 'target';
 }
+
+function syncEngine() {
+  currentEngine = $('b-engine').value;
+  const meta = ENGINE_META[currentEngine] || ENGINE_META.adaptix;
+  document.querySelectorAll('#engine-dock .engine-logo').forEach((btn) => {
+    const on = btn.dataset.engine === currentEngine;
+    btn.classList.toggle('on', on);
+    btn.setAttribute('aria-pressed', String(on));
+  });
+  $('engine-current').textContent = meta.label + ' · ' + meta.sub;
+  $('engine-modal-title').textContent = meta.label + ' settings';
+  document.querySelectorAll('.engine-settings').forEach((box) => {
+    box.classList.toggle('hidden', box.id !== 'settings-' + currentEngine);
+  });
+  $('full-offensive-panel').classList.toggle('hidden', !$('b-full-offensive').checked);
+  if (currentEngine === 'opencode' && !$('b-opencode-model').dataset.loaded) loadOpencodeModels();
+  if (currentEngine === 'code') syncCodeSource();
+}
+
+function openEngineModal(engine) {
+  if (engine) { $('b-engine').value = engine; syncEngine(); }
+  $('engine-modal').classList.remove('hidden');
+  if (currentEngine === 'code' && !$('b-code-model').dataset.loaded) loadCodeModels();
+  const focusId = currentEngine === 'code' ? 'b-code-path'
+    : currentEngine === 'opencode' ? 'target-opencode' : 'target';
+  setTimeout(() => { const el = $(focusId); if (el) el.focus(); }, 80);
+}
+function closeEngineModal() { $('engine-modal').classList.add('hidden'); }
+
+document.querySelectorAll('#engine-dock .engine-logo').forEach((btn) => {
+  btn.addEventListener('click', () => openEngineModal(btn.dataset.engine));
+});
+$('engine-modal-close').addEventListener('click', closeEngineModal);
+$('engine-modal-done').addEventListener('click', closeEngineModal);
+$('engine-modal').addEventListener('click', (e) => { if (e.target === $('engine-modal')) closeEngineModal(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('engine-modal').classList.contains('hidden')) closeEngineModal();
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && $('panel-chat').classList.contains('active')
+      && document.activeElement === $('instruction')) $('start-btn').click();
+});
 
 function codeSourceKind() {
   return $('b-code-source-folder').checked ? 'folder' : 'zip';
@@ -98,6 +168,11 @@ $('b-full-offensive').addEventListener('change', syncEngine);
 $('b-code-source-zip').addEventListener('change', syncCodeSource);
 $('b-code-source-folder').addEventListener('change', syncCodeSource);
 syncEngine();
+
+// The target field lives in each engine's pop-up; keep both copies in sync so
+// switching engine does not silently drop a target the operator already typed.
+$('target').addEventListener('input', () => { $('target-opencode').value = $('target').value; });
+$('target-opencode').addEventListener('input', () => { $('target').value = $('target-opencode').value; });
 
 async function loadCodeModels() {
   const select = $('b-code-model');
@@ -574,8 +649,8 @@ function renderFlowsActivityChart(daily) {
   box.innerHTML = `<svg class="chart-svg" viewBox="0 0 ${w} ${h}" role="img" aria-label="Flows activity per day">
     <defs>
       <linearGradient id="chartBar" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="#3b82f6"></stop>
-        <stop offset="100%" stop-color="#1a5cbe"></stop>
+        <stop offset="0%" style="stop-color: var(--accent)"></stop>
+        <stop offset="100%" style="stop-color: var(--accent)"></stop>
       </linearGradient>
     </defs>
     ${hGrid}${vGrid}
@@ -644,7 +719,6 @@ let selectedFlowTab = 'automation';
 let lastFlowView = null;
 let renderedFlowId = null; // which flow's tab-bar chrome is currently built in the DOM
 let searchQuery = '';
-let showingNewFlowForm = false; // "+ New Flow" was clicked explicitly
 let flowsFilter = '';
 
 async function loadFlows() {
@@ -707,10 +781,9 @@ function flowCardHtml(f) {
 
 function renderFlowsPage(flows) {
   lastFlowsList = flows;
-  const showTable = flows.length > 0 && !showingNewFlowForm;
+  const showTable = flows.length > 0;
   $('flows-table-view').classList.toggle('hidden', !showTable);
-  $('new-flow-view').classList.toggle('hidden', showTable);
-  $('new-flow-close').classList.toggle('hidden', flows.length === 0);
+  $('flows-empty').classList.toggle('hidden', showTable);
   if (!showTable) return;
   const q = flowsFilter.toLowerCase();
   const rows = flows.filter((f) => !q || matchesText(q, f.run_id, f.objective, f.target[0], f.status, f.group, f.title));
@@ -811,14 +884,12 @@ function matchesText(q, ...fields) {
 }
 
 function openNewFlow() {
-  const flowsTab = Array.from(document.querySelectorAll('.nav-item')).find((b) => b.dataset.tab === 'flows');
-  if (flowsTab) flowsTab.click();
-  showingNewFlowForm = true;
-  loadFlows();
+  activateTab('chat');
+  setTimeout(() => $('instruction').focus(), 60);
 }
 $('new-flow-btn').addEventListener('click', openNewFlow);
 $('rail-new-flow').addEventListener('click', openNewFlow);
-$('new-flow-close').addEventListener('click', () => { showingNewFlowForm = false; loadFlows(); });
+$('flows-empty-cta').addEventListener('click', openNewFlow);
 $('flows-filter').addEventListener('input', (e) => { flowsFilter = e.target.value; loadFlows(); });
 
 function renderRecentFlows(flows) {
@@ -852,11 +923,7 @@ function openFlow(runId) {
   refreshFlowDetail();
 }
 
-$('flow-back-btn').addEventListener('click', () => {
-  $('flow-fullpage').classList.add('hidden');
-  document.querySelector('.topbar').classList.remove('hidden');
-  document.querySelectorAll('.panel.active').forEach((p) => p.classList.remove('hidden'));
-});
+$('flow-back-btn').addEventListener('click', () => { closeFlowView(); });
 
 async function refreshFlowDetail() {
   if (!selectedFlow) return;
@@ -1609,7 +1676,7 @@ $('start-btn').addEventListener('click', async () => {
     return;
   }
   const engine = $('b-engine').value;
-  const target = $('target').value.trim();
+  const target = $(engineTarget()).value.trim();
   const fullOffensive = engine === 'opencode' && $('b-full-offensive').checked;
   if (engine === 'opencode') {
     if (!target) { alert('target is required'); return; }
@@ -1649,7 +1716,7 @@ $('start-btn').addEventListener('click', async () => {
     const res = await fetch('/api/audit/code', { method: 'POST', body: form });
     const data = await res.json();
     if (!res.ok) alert(data.error || 'could not start code audit');
-    else if (data.run_id) { showingNewFlowForm = false; openFlow(data.run_id); }
+    else if (data.run_id) openFlow(data.run_id);
     refresh();
     return;
   }
@@ -1677,7 +1744,6 @@ $('start-btn').addEventListener('click', async () => {
   if (!res.ok) {
     alert(data.error || 'could not start run');
   } else if (data.run_id) {
-    showingNewFlowForm = false; // the Flows page goes back to its table next time
     openFlow(data.run_id); // watch the flow you just started, same as PentAGI does
   }
   refresh();
@@ -1712,12 +1778,11 @@ function renderTemplates(items) {
     const t = items.find((x) => x.id === id);
     if (!t) return;
     $('target').value = t.target || '';
+    $('target-opencode').value = t.target || '';
     $('instruction').value = t.objective;
     if (t.model) $('b-model').value = t.model;
-    tabs.forEach((b) => b.classList.toggle('active', b.dataset.tab === 'flows'));
-    panels.forEach((p) => p.classList.toggle('active', p.id === 'panel-flows'));
-    showingNewFlowForm = true;
-    loadFlows();
+    activateTab('chat');
+    $('instruction').focus();
   }));
   box.querySelectorAll('.del-tpl').forEach((btn) => btn.addEventListener('click', async (e) => {
     const id = e.target.closest('.template-row').dataset.id;
