@@ -19,6 +19,7 @@ dependencies = [
 test = ["pytest>=8,<10"]
 dev = ["langgraph-cli[inmem]>=0.4,<1"]
 web = ["Flask>=3,<4"]
+scan = ["bandit>=1.8,<2", "semgrep>=1.80,<2"]  # deterministic SAST for code audit (fase 1)
 
 [tool.setuptools.packages.find]
 include = ["src*"]

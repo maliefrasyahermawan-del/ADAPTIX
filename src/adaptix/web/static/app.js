@@ -168,6 +168,7 @@ async function preflightCodeFolder() {
   const warn = $('b-code-skip-warning');
   if (!warn) return;
   warn.classList.add('hidden'); warn.textContent = '';
+  renderScannerBadges();
   if (codeSourceKind() !== 'folder') return;
   const path = ($('b-code-path') || {}).value || '';
   if (!path.trim()) return;
@@ -186,6 +187,22 @@ const _preflightDebounce = {};
   const el = $(id);
   if (el) el.addEventListener('change', () => { clearTimeout(_preflightDebounce[id]); _preflightDebounce[id] = setTimeout(preflightCodeFolder, 300); });
 });
+
+async function renderScannerBadges() {
+  const box = $('b-code-scanner-badges');
+  if (!box) return;
+  try {
+    const res = await fetch('/api/audit/scanners');
+    const data = await res.json();
+    const rows = data.scanners || [];
+    box.innerHTML = rows.map((s) => {
+      const badge = s.installed ? `<span class="pill ok">✓ ${esc(s.name)}</span>`
+        : `<span class="pill warn" title="${esc(s.hint || '')}">✗ ${esc(s.name)}</span>`;
+      return badge;
+    }).join(' ') + `<span class="code-note" style="margin-left:6px">scanner deterministik: temuan pertama <5s; LLM hanya menilai konteks.</span>`;
+  } catch (e) { /* offline */ }
+}
+renderScannerBadges();
 
 $('b-engine').addEventListener('change', syncEngine);
 $('b-full-offensive').addEventListener('change', syncEngine);

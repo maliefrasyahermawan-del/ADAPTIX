@@ -115,9 +115,74 @@ def _run_subprocess(argv, timeout=120):
         return None
 
 
+def _resolve(name: str, cfg_cmd: str) -> str | None:
+    """vendor/bin dulu, lalu PATH. config/scanners.yaml bisa override command."""
+    import os
+    from pathlib import Path as _P
+
+    # config override
+    if cfg_cmd and cfg_cmd != name:
+        p = _P(cfg_cmd)
+        if p.is_absolute() or (p.parent != _P('.')):
+            # explicit path (e.g. vendor/bin/gitleaks.exe)
+            if p.is_file():
+                return str(p)
+    # vendor/bin/<name>.exe (repo-bundled, checksum verified)
+    root = _P(__file__).resolve().parents[3]
+    vendor = root / 'vendor' / 'bin' / (name + '.exe')
+    if vendor.is_file():
+        return str(vendor)
+    found = shutil.which(name)
+    if found:
+        return found
+    # also try without .exe suffix on Windows
+    if os.name == 'nt':
+        return shutil.which(name + '.exe')
+    return None
+
+
+_SCANNER_CONFIG = None
+
+
+def _load_config():
+    global _SCANNER_CONFIG
+    if _SCANNER_CONFIG is not None:
+        return _SCANNER_CONFIG
+    try:
+        from src.adaptix.config import config as _cfg
+        _SCANNER_CONFIG = _cfg('scanners.yaml') or {}
+    except Exception:
+        _SCANNER_CONFIG = {}
+    return _SCANNER_CONFIG
+
+
+def _scanner_enabled(name: str) -> bool:
+    cfg = _load_config()
+    block = (cfg.get('scanners') or {}).get(name) or {}
+    return bool(block.get('enabled', True))
+
+
+def _scanner_cmd(name: str) -> str:
+    cfg = _load_config()
+    block = (cfg.get('scanners') or {}).get(name) or {}
+    return str(block.get('command') or name)
+
+
+def _scanner_timeout(name: str, default: int) -> int:
+    cfg = _load_config()
+    block = (cfg.get('scanners') or {}).get(name) or {}
+    try:
+        return int(block.get('timeout_seconds') or default)
+    except (TypeError, ValueError):
+        return default
+
+
 def _scan_bandit(bundle) -> list[dict]:
     """bandit -r <tmpdir> -f json — Python SAST."""
-    if not shutil.which('bandit'):
+    if not _scanner_enabled('bandit'):
+        return []
+    cmd = _resolve('bandit', _scanner_cmd('bandit'))
+    if not cmd:
         return []
     files = bundle.get('files') or {}
     tmp = tempfile.mkdtemp(prefix='bandit-')
@@ -127,8 +192,8 @@ def _scan_bandit(bundle) -> list[dict]:
             dest = root / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(row.get('text') or '', encoding='utf-8')
-        out = _run_subprocess(['bandit', '-r', str(root), '-f', 'json', '-o', str(root / 'out.json'),
-                               '--quiet'], timeout=180)
+        out = _run_subprocess([cmd, '-r', str(root), '-f', 'json', '-o', str(root / 'out.json'),
+                               '--quiet'], timeout=_scanner_timeout('bandit', 180))
         if out is None or not (root / 'out.json').is_file():
             return []
         import json
@@ -157,7 +222,10 @@ def _scan_bandit(bundle) -> list[dict]:
 
 def _scan_semgrep(bundle) -> list[dict]:
     """semgrep scan --config p/ci --json — multi-language SAST."""
-    if not shutil.which('semgrep'):
+    if not _scanner_enabled('semgrep'):
+        return []
+    cmd = _resolve('semgrep', _scanner_cmd('semgrep'))
+    if not cmd:
         return []
     files = bundle.get('files') or {}
     tmp = tempfile.mkdtemp(prefix='semgrep-')
@@ -167,8 +235,9 @@ def _scan_semgrep(bundle) -> list[dict]:
             dest = root / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(row.get('text') or '', encoding='utf-8')
-        out = _run_subprocess(['semgrep', 'scan', '--config', 'p/ci', '--json',
-                               '--metrics=off', '--quiet', str(root)], timeout=180)
+        _semgrep_cfg = (_scanner_cmd('semgrep') == 'semgrep' and 'p/ci') or 'p/ci'
+        out = _run_subprocess([cmd, 'scan', '--config', _semgrep_cfg, '--json',
+                               '--metrics=off', '--quiet', str(root)], timeout=_scanner_timeout('semgrep', 180))
         if out is None or not out.stdout:
             return []
         import json
@@ -197,7 +266,10 @@ def _scan_semgrep(bundle) -> list[dict]:
 
 def _scan_gitleaks(bundle) -> list[dict]:
     """gitleaks detect --no-git --source <tmpdir> --report-format json."""
-    if not shutil.which('gitleaks'):
+    if not _scanner_enabled('gitleaks'):
+        return []
+    cmd = _resolve('gitleaks', _scanner_cmd('gitleaks'))
+    if not cmd:
         return []
     files = bundle.get('files') or {}
     tmp = tempfile.mkdtemp(prefix='gitleaks-')
@@ -208,9 +280,9 @@ def _scan_gitleaks(bundle) -> list[dict]:
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(row.get('text') or '', encoding='utf-8')
         report = root / 'g.json'
-        out = _run_subprocess(['gitleaks', 'detect', '--no-git', '--source', str(root),
+        out = _run_subprocess([cmd, 'detect', '--no-git', '--source', str(root),
                                '--report-format', 'json', '--report-path', str(report),
-                               '--verbose'], timeout=120)
+                               '--verbose'], timeout=_scanner_timeout('gitleaks', 120))
         if not report.is_file():
             return []
         import json
@@ -238,7 +310,10 @@ def _scan_gitleaks(bundle) -> list[dict]:
 
 def _scan_osv(bundle) -> list[dict]:
     """osv-scanner scan source -r <tmpdir> --format json — dependency vuln."""
-    if not shutil.which('osv-scanner'):
+    if not _scanner_enabled('osv-scanner'):
+        return []
+    cmd = _resolve('osv-scanner', _scanner_cmd('osv-scanner'))
+    if not cmd:
         return []
     files = bundle.get('files') or {}
     tmp = tempfile.mkdtemp(prefix='osv-')
@@ -248,8 +323,8 @@ def _scan_osv(bundle) -> list[dict]:
             dest = root / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(row.get('text') or '', encoding='utf-8')
-        out = _run_subprocess(['osv-scanner', 'scan', 'source', '-r', str(root),
-                               '--format', 'json', '--skip-go'], timeout=180)
+        out = _run_subprocess([cmd, 'scan', 'source', '-r', str(root),
+                               '--format', 'json', '--skip-go'], timeout=_scanner_timeout('osv-scanner', 180))
         if out is None or not out.stdout:
             return []
         import json
@@ -281,12 +356,21 @@ def _scan_osv(bundle) -> list[dict]:
 def scan_bundle(bundle) -> list[dict]:
     """Run every available scanner; fall back to regex if none installed.
 
-    Order: bandit -> semgrep -> gitleaks -> osv-scanner -> fallback-regex.
-    External scanners only run when their binary is on PATH, so the audit
-    works on a plain `pip install` machine too.
+    Order dari config/scanners.yaml (default: bandit -> semgrep -> gitleaks -> osv-scanner).
+    External scanners only run when their binary is on PATH or vendor/bin/,
+    so the audit works on a plain `pip install` machine too.
     """
+    cfg = _load_config()
+    order = cfg.get('order') or ['bandit', 'semgrep', 'gitleaks', 'osv-scanner']
+    backend_by_name = {
+        'bandit': _scan_bandit, 'semgrep': _scan_semgrep,
+        'gitleaks': _scan_gitleaks, 'osv-scanner': _scan_osv,
+    }
     findings: list[dict] = []
-    for backend in (_scan_bandit, _scan_semgrep, _scan_gitleaks, _scan_osv):
+    for name in order:
+        backend = backend_by_name.get(name)
+        if backend is None:
+            continue
         try:
             found = backend(bundle)
         except Exception:

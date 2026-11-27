@@ -97,7 +97,8 @@ def test_directory_bundle_reads_text_and_skips_private_entries(tmp_path):
     assert '[REDACTED]' in bundle['files']['pkg/app.py']['text']
 
 
-def test_directory_bundle_skips_oversized_file(tmp_path):
+def test_directory_bundle_skips_oversized_file(tmp_path, monkeypatch):
+    from src.adaptix.code_audit.sources import directory_bundle
     from src.adaptix.code_audit.sources import directory_bundle
     source = tmp_path / 'project'
     (source / 'vendor').mkdir(parents=True)

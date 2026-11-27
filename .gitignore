@@ -72,6 +72,8 @@ config/.adaptix_scope_signing_key
 
 # Embedded reference checkout (full duplicate of the project)
 vendor/ADAPTIX-V2/
+# Scanner binaries are fetched via scripts/vendor-scanners.py; do not commit exes.
+vendor/bin/
 
 # WSL virtual environment
 .venv-wsl/

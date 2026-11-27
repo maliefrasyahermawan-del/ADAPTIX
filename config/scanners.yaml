@@ -1,0 +1,32 @@
+# Deterministic scanner pre-pass for code audit (fase 2+3).
+enabled: true
+scanners:
+  bandit:
+    enabled: true
+    command: bandit          # pip install bandit / pip install -e .[scan]
+    timeout_seconds: 120
+    languages: [python]
+  semgrep:
+    enabled: true
+    command: semgrep         # pip install semgrep / pip install -e .[scan]
+    timeout_seconds: 180
+    config: p/ci
+    languages: [javascript, typescript, html, python, php, go]
+  gitleaks:
+    enabled: true
+    command: vendor/bin/gitleaks.exe   # repo-bundled (checksum verified v8.30.1)
+    timeout_seconds: 120
+  osv-scanner:
+    enabled: true
+    command: vendor/bin/osv-scanner.exe # repo-bundled (checksum verified v2.7.1)
+    timeout_seconds: 180
+  fallback-regex:
+    enabled: true   # in-process regex sweep when no external scanner fires
+    timeout_seconds: 10
+order: [bandit, semgrep, gitleaks, osv-scanner]
+# Fase 3: LLM round-trip reduction
+llm:
+  max_output_tokens: 1200          # was 3000 -> turn report lebih pendek & cepat
+  batch_first_turn: true            # kirim 200 baris pertama tiap file di turn pertama
+  early_exit_high: 3                # jika >=N kandidat high, LLM hanya 1 turn report
+  early_exit_max_iterations: 2      # batasi iterasi total saat early-exit aktif

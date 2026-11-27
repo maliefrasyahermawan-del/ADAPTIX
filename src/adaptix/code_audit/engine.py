@@ -22,10 +22,14 @@ MAX_READ_BYTES = 14_000
 RECENT_OBSERVATIONS = 5
 EXCERPT_HEAD = 1_200
 EXCERPT_TAIL = 400
-MAX_OUTPUT_TOKENS = 3_000
+# Fase 3: report turn lebih pendek => lebih cepat, dan batching turn pertama
+# memuat 200 baris pertama tiap file supaya LLM tidak perlu list_source+read
+# kosong di dua iterasi pertama.
+MAX_OUTPUT_TOKENS = 1_200
 INVALID_RESPONSE_LIMIT = 3
 INVALID_REPORT_LIMIT = 2
 TRANSIENT_RETRY_LIMIT = 3
+FIRST_TURN_FILE_LINES = 200
 
 SYSTEM = '''You are ADAPTIX Code Audit, an authorized static source-code reviewer.
 Respond in Indonesian. You inspect only the provided source bundle; you cannot run
@@ -311,6 +315,14 @@ def _message_payload(state, bundle):
         'remaining': {'iterations': remaining_iterations,
                       'tokens': max(0, state['token_budget'] - state['tokens_used'])},
     }
+    # Fase 3 batching: turn pertama sudah berisi 200 baris pertama tiap file,
+    # jadi LLM tidak perlu list_source kosong + read per file.
+    if state.get('first_turn_batch') and not state.get('iterations'):
+        payload['first_turn_snippets'] = state['first_turn_batch']
+        payload['directive'] = (
+            'Turn pertama: snippet + kandidat scanner sudah disediakan. '
+            'Jangan mulai dari list_source; langsung baca baris yang relevan '
+            'dengan kandidat high, atau tulis laporan kontekstual sekarang.')
     if remaining_iterations <= 3:
         payload['directive'] = (
             'Iterasi tersisa sedikit. JANGAN membaca file lagi. Tulis laporan final '
@@ -521,6 +533,22 @@ def _write_report(run_dir: Path, report, state, patches=None):
     return record
 
 
+def _first_turn_batch(bundle):
+    """200 baris pertama tiap file, untuk turn pertama (batching).
+
+    Mengurangi 2 round-trip kosong (list_source lalu read_source per file)
+    menjadi payload yang sudah berisi snippet nyata di turn pertama.
+    """
+    files = bundle.get('files') or {}
+    batch = []
+    for path, row in sorted(files.items()):
+        text = row.get('text') or ''
+        head = '\n'.join(text.splitlines()[:FIRST_TURN_FILE_LINES])
+        batch.append({'path': path, 'lines': row.get('lines'),
+                      'head': head[:MAX_READ_BYTES]})
+    return batch
+
+
 def run_audit(run_dir, instruction, *, model, bundle, time_budget=900,
               token_budget=50000, max_iterations=8, api_base=None, api_key=None,
               call=None, auto_patch=False):
@@ -545,7 +573,22 @@ def run_audit(run_dir, instruction, *, model, bundle, time_budget=900,
         'tokens_used': 0, 'tokens_request': 0, 'status': 'running', 'node': 'plan',
         'stop_reason': None, 'error': '', 'run_started_at': time.time(),
         'waiting_provider': False, 'scanner_findings': scanner_findings,
+        'first_turn_batch': _first_turn_batch(bundle),
     }
+    # Fase 3 early-exit: banyak kandidat high dari scanner => LLM cukup
+    # 1 turn report kontekstual, tidak perlu 8 iterasi eksplorasi.
+    try:
+        from src.adaptix.config import config as _cfg
+        _llm_cfg = (_cfg('scanners.yaml') or {}).get('llm') or {}
+    except Exception:
+        _llm_cfg = {}
+    high_count = sum(1 for f in scanner_findings if str(f.get('severity')).lower() in ('high', 'critical'))
+    early_exit = bool(_llm_cfg.get('early_exit_high') and high_count >= int(_llm_cfg['early_exit_high']))
+    if early_exit:
+        state['max_iterations'] = min(state['max_iterations'], int(_llm_cfg.get('early_exit_max_iterations') or 2))
+        state['notes'] = (state.get('notes') or '') + (
+            f' Early-exit aktif: {high_count} kandidat high dari scanner — '
+            'maksimal 1-2 turn, langsung tulis laporan kontekstual.')
     # Seed the first LLM turn with the scanner summary so the model starts
     # from verified candidates instead of blind list_source.
     if scanner_findings:

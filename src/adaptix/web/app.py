@@ -1052,6 +1052,57 @@ def create_app() -> Flask:
             default = models[0] if models else ''
         return jsonify({'models': models, 'default': default})
 
+    @app.get('/api/audit/scanners')
+    def audit_scanners():
+        """Status scanner deterministik: installed / vendor-bundled / missing.
+
+        UI memakai ini untuk badge per scanner dan hint install
+        (pip install -e .[scan] untuk bandit/semgrep).
+        """
+        import shutil as _sh
+        from pathlib import Path as _P
+
+        from src.adaptix.code_audit.scanner import _resolve, _scanner_cmd, _load_config
+
+        cfg = _load_config()
+        blocks = cfg.get('scanners') or {}
+        out = []
+        for name in ('bandit', 'semgrep', 'gitleaks', 'osv-scanner', 'fallback-regex'):
+            block = blocks.get(name) or {}
+            enabled = bool(block.get('enabled', True))
+            cmd_cfg = str(block.get('command') or name)
+            resolved = None
+            source = 'missing'
+            if name == 'fallback-regex':
+                resolved = 'in-process'
+                source = 'builtin'
+            else:
+                try:
+                    resolved = _resolve(name, cmd_cfg)
+                except Exception:
+                    resolved = None
+                if resolved:
+                    if 'vendor' in str(resolved).replace('\\', '/'):
+                        source = 'vendor'
+                    elif resolved == 'in-process':
+                        source = 'builtin'
+                    else:
+                        source = 'path'
+                else:
+                    hint = {
+                        'bandit': 'pip install bandit  (atau pip install -e .[scan])',
+                        'semgrep': 'pip install semgrep (atau pip install -e .[scan])',
+                        'gitleaks': 'python scripts/vendor-scanners.py',
+                        'osv-scanner': 'python scripts/vendor-scanners.py',
+                    }.get(name, '')
+                    out.append({'name': name, 'enabled': enabled, 'installed': False,
+                                'path': None, 'source': source, 'hint': hint})
+                    continue
+            out.append({'name': name, 'enabled': enabled, 'installed': True,
+                        'path': resolved, 'source': source, 'hint': ''})
+        # vendor binaries yang ada tapi tidak di config order tetap ditampilkan
+        return jsonify({'scanners': out})
+
     @app.get('/api/audit/models')
     def audit_model_list():
         """LiteLLM model choices for the static code audit.
