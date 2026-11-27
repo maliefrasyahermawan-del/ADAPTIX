@@ -1534,7 +1534,7 @@ function renderCodeAudit(view) {
           ${s.description ? `<div class="finding-text">${esc(String(s.description).slice(0, 600))}</div>` : ''}
         </div>`).join('')}</div>
     </div>` : '';
-  const evaluation = external.evaluation || {};
+  const evaluation = external.evaluation || (external.report && external.report.evaluation) || {};
   const evalHtml = evaluation.score != null ? `
     <div class="dash-card">
       <div class="dash-card-title">🔒 Evaluasi Keamanan — skor ${evaluation.score}/100 · grade ${esc(evaluation.grade || '')}</div>
@@ -1565,7 +1565,7 @@ function renderCodeAudit(view) {
         </div>`).join('')}${excludedFiles.length > 50 ? `<div class="empty-sub">… dan ${excludedFiles.length - 50} lainnya</div>` : ''}</div>
       </details>
     </div>` : (source.excluded ? `<div class="dash-card"><div class="dash-card-title">File dikecualikan (${source.excluded})</div><div class="empty-sub">Rincian per file tidak tersedia untuk run lama.</div></div>` : '');
-  const findingHtml = findings.length ? findings.map((d) => `
+  const findingHtml = (findings.length || (report && report.findings && report.findings.length)) ? ((report && report.findings) || findings).map((d) => `
     <div class="finding-card">
       <div class="finding-head">
         <span class="sev ${sevClass(d.severity)}">${esc(d.severity || 'info')}</span>

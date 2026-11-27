@@ -177,8 +177,12 @@ def _check_auth(bundle, scanner_findings):
 
 
 def _check_input(bundle, scanner_findings):
+    # Jangan pakai Function( — itu callback JS normal (function(){}, new Promise(function))
+    # Bukan eksploitasi. Hanya: eval( , innerHTML= dari data pengguna, document.write, shell=True, SQL concat.
     hits = _evidence(bundle, re.compile(
-        r'eval\s*\(|Function\s*\(|innerHTML\s*=|document\.write|shell\s*=\s*True|execute\s*\([^)]*(?:\+|%s|f["\'])', re.I))
+        r'(?<!\w)eval\s*\(|innerHTML\s*=\s*(?!["\'][\w\s]+["\']\s*;)|document\.write\s*\(|shell\s*=\s*True|execute\s*\([^)]*(?:\+|%s|f["\'])', re.I))
+    # Filter lebih ketat: innerHTML yang di-assign dari variabel (bukan string literal)
+    hits = [h for h in hits if not re.search(r'innerHTML\s*=\s*["\'][^"\']{0,40}["\']\s*;?\s*$', h.get('snippet', ''))]
     deduction = 0
     notes = []
     if hits:
@@ -187,7 +191,8 @@ def _check_input(bundle, scanner_findings):
             notes.append(f"{h['path']}:{h['line']} — injeksi/XSS risk: {h['snippet'][:110]}")
         notes.append('Escape output (textContent / DOMPurify), parameter binding untuk SQL, jangan eval.')
     else:
-        notes.append('Tidak ada pola injeksi klasik (eval/SQL concat/innerHTML) terdeteksi.')
+        notes.append('Tidak ada pola injeksi klasik (eval/SQL concat/innerHTML variabel) terdeteksi. '
+                     'Catatan: Function(/callback JS bukan injeksi dan tidak dihitung.')
     return _row('Input handling / injeksi', deduction, notes,
                 'Input di-escape; query terparameter; tidak ada eval.')
 
