@@ -669,6 +669,7 @@ def _code_snapshot(run_id, base) -> LiveView:
                    'files': meta.get('files'), 'excluded': meta.get('excluded')} if meta else {},
         'scanner': (progress or {}).get('verified_findings') or (report or {}).get('verified_findings') or [],
         'scanner_live': (progress or {}).get('scanner_findings') or [],
+        'evaluation': (report or {}).get('evaluation') or {},
         'excluded_files': _excluded,
         'activity': _read_jsonl(os.path.join(base, 'code-activity.ndjson'), limit=200),
         'bundle_files': sorted((_bundle.get('files') or {}).keys()) if isinstance(_bundle, dict) else [],

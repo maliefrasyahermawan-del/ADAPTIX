@@ -1534,6 +1534,24 @@ function renderCodeAudit(view) {
           ${s.description ? `<div class="finding-text">${esc(String(s.description).slice(0, 600))}</div>` : ''}
         </div>`).join('')}</div>
     </div>` : '';
+  const evaluation = external.evaluation || {};
+  const evalHtml = evaluation.score != null ? `
+    <div class="dash-card">
+      <div class="dash-card-title">🔒 Evaluasi Keamanan — skor ${evaluation.score}/100 · grade ${esc(evaluation.grade || '')}</div>
+      <div class="dash-card-sub">${esc(evaluation.verdict || '')}</div>
+      <div class="findings-list" style="margin-top:8px">
+        ${(evaluation.categories || []).map((c) => `
+          <div class="finding-card">
+            <div class="finding-head"><span>${esc(c.category)}</span><span class="pill ${c.deduction > 12 ? 'bad' : (c.deduction > 0 ? 'warn' : 'ok')}">-${c.deduction}pt</span></div>
+            ${(c.notes || []).map((n) => `<div class="finding-text">${esc(n)}</div>`).join('')}
+            <div class="finding-text"><b>rekomendasi:</b> ${esc(c.recommendation || '')}</div>
+          </div>`).join('')}
+      </div>
+      ${(evaluation.upgrades || []).length ? `<div class="dash-card-title" style="margin-top:12px">Prioritas upgrade</div>
+      <div class="findings-list">${evaluation.upgrades.map((u) => `
+        <div class="finding-card"><div class="finding-head"><span>[${esc(u.prioritas)}] ${esc(u.kategori)}</span></div>
+        <div class="finding-text">${esc(u.aksi)}</div></div>`).join('')}</div>` : ''}
+    </div>` : '';
   const excludedHtml = excludedFiles.length ? `
     <div class="dash-card">
       <div class="dash-card-title">File dikecualikan (${excludedFiles.length}) · per alasan</div>
@@ -1613,6 +1631,7 @@ function renderCodeAudit(view) {
       </div>
     </div>
     ${waiting ? `<div class="dash-card"><div class="dash-card-title">⏳ menunggu model …</div><div class="dash-card-sub">${esc(progress.event || 'mengirim prompt ke provider')} · ${Math.round(elapsed || 0)}s · token request ${progress.tokens_request ? Number(progress.tokens_request).toLocaleString() : '-'}</div></div>` : ''}
+    ${evalHtml}
     ${scannerHtml}
     ${excludedHtml}
     <div class="dash-card">

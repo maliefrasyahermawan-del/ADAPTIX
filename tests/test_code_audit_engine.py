@@ -108,7 +108,14 @@ def test_fabricated_evidence_is_rejected(tmp_path):
                       token_budget=50000, max_iterations=6, call=call)
     assert state['status'] == 'completed_with_errors'
     assert state['stop_reason'] == 'invalid_report'
-    assert not (run_dir / 'code-report.json').exists()
+    # Kontrak baru: selalu tulis laporan fallback evaluasi (skor+grade) —
+    # audit tidak pernah menghasilkan nol output. Bukti palsu tetap ditolak.
+    assert (run_dir / 'code-report.json').exists()
+    import json as _json
+    rec = _json.loads((run_dir / 'code-report.json').read_text(encoding='utf-8'))
+    assert 'evaluation' in rec and rec['evaluation']['score'] is not None
+    assert all(f['evidence_ids'] == [] or f.get('verification_status') == 'verified'
+               for f in rec.get('verified_findings', []))
 
 
 def test_provider_failure_does_not_fake_a_report(tmp_path):
@@ -122,7 +129,13 @@ def test_provider_failure_does_not_fake_a_report(tmp_path):
                       token_budget=50000, max_iterations=3, call=call)
     assert state['status'] == 'completed_with_errors'
     assert state['stop_reason'] == 'provider_unavailable'
-    assert not (run_dir / 'code-report.json').exists()
+    # Laporan fallback deterministik selalu ditulis (evaluasi keamanan),
+    # tapi tidak memalsukan temuan LLM — verified dari scanner saja.
+    assert (run_dir / 'code-report.json').exists()
+    import json as _json
+    rec = _json.loads((run_dir / 'code-report.json').read_text(encoding='utf-8'))
+    assert rec['status'] == 'completed'
+    assert 'evaluation' in rec
 
 
 def test_network_and_terminal_actions_are_not_in_the_schema():

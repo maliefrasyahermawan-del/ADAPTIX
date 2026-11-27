@@ -31,9 +31,18 @@ INVALID_REPORT_LIMIT = 2
 TRANSIENT_RETRY_LIMIT = 3
 FIRST_TURN_FILE_LINES = 200
 
-SYSTEM = '''You are ADAPTIX Code Audit, an authorized static source-code reviewer.
-Respond in Indonesian. You inspect only the provided source bundle; you cannot run
-code, install dependencies, browse, or use the network.
+SYSTEM = '''You are ADAPTIX Code Audit — an authorized static source-code reviewer.
+Respond in Indonesian. You inspect only the provided source bundle; you
+cannot run code, install dependencies, browse, or use the network.
+
+AUDIT MAKSUDNYA LEBIH DARI MENCARI BUG:
+Jangan hanya daftar kerentanan. Kamu WAJIB menulis evaluasi keamanan
+menyeluruh yang menjawab:
+  - Apakah folder/website ini sudah aman? Seberapa aman (skor 0-100)?
+  - Struktur keamanannya bagaimana (config server, dependensi, storage, auth, injeksi, kredensial)?
+  - Jika belum aman, apa saja upgrade yang harus dilakukan (prioritas tinggi/sedang/rendah)?
+Laporan akhir tanpa evaluasi = GAGAL. executive_summary harus menyebut
+skor/grade dan verdict (“aman / cukup aman / risiko sedang / risiko tinggi”).
 
 Choose ONE next action, or write the final report. Start with list_source, then
 read the files that matter. Never invent files, lines, results, or evidence IDs.
@@ -52,9 +61,14 @@ Findings describe static risks with severity (critical/high/medium/low/info), th
 affected lines, impact, remediation and CWE when known. Say plainly when a claim
 is only model-assessed and would need dynamic confirmation.
 
+FORMAt JSON WAJIB (sangat ketat — pelanggaran = ditolak validator):
 Return exactly one JSON object matching this schema:
 {schema}
 Set action or report, never both. Keep commentary short and operator-facing.
+JANGAN menulis teks di luar JSON. JANGAN memotong string di tengah.
+JANGAN mengembalikan potongan markdown / code fence tanpa JSON object.
+Jika tidak yakin, pilih action read_source yang relevan — lebih baik
+membaca 1 file daripada mengirim report rusak.
 '''
 
 PATCH_HINT = '''
@@ -69,6 +83,10 @@ report, backed up first, and skipped when the snippet does not match exactly.
 REPORT_MARKDOWN = '''# {title}
 
 {executive_summary}
+
+## Skor & Verdict Keamanan
+
+{evaluation}
 
 ## Metodologi
 
@@ -513,6 +531,47 @@ def _patch_markdown(patches):
     return '\n'.join(rows)
 
 
+def _normalize_report(report, state):
+    """Ensure a report always carries executive_summary + evaluation.
+
+    Jika model tidak mengirim executive_summary (schema gagal) atau
+    mengirimnya kosong, kita bangun fallback deterministik dari
+    scanner + heuristik evaluation — laporan tidak pernah kosong.
+    """
+    report = dict(report or {})
+    try:
+        from src.adaptix.code_audit.evaluation import evaluate as _evaluate
+    except Exception:
+        _evaluate = None
+    if _evaluate:
+        evaluation = _evaluate(state.get('_bundle') or {},
+                                state.get('scanner_findings') or [],
+                                report.get('findings') or [])
+    else:
+        evaluation = {'score': 0, 'grade': 'F',
+                      'grade_text': 'F — Kritis', 'verdict': 'Evaluasi tidak tersedia.',
+                      'categories': [], 'upgrades': [], 'total_deduction': 0}
+    if not str(report.get('executive_summary') or '').strip():
+        try:
+            from src.adaptix.code_audit.evaluation import summary_text as _summary_text
+            fallback = _summary_text(evaluation)
+        except Exception:
+            fallback = evaluation.get('verdict', '')
+        report['executive_summary'] = fallback
+    if not str(report.get('title') or '').strip():
+        report['title'] = f'Audit Keamanan — {state.get("source_name") or "source"}'
+    if not str(report.get('methodology') or '').strip():
+        report['methodology'] = ('Audit statis: scanner deterministik (bandit/semgrep/gitleaks/osv) '
+                                 '+ evaluasi heuristik 7 kategori + penilaian model atas observasi read_source.')
+    if not str(report.get('limitations') or '').strip():
+        report['limitations'] = ('Statis saja, tanpa eksekusi. Skor dari heuristik + scanner; '
+                                 'LLM menilai konteks. Perlu pentest dinamis sebelum produksi.')
+    if not str(report.get('next_steps') or '').strip():
+        ups = evaluation.get('upgrades') or []
+        report['next_steps'] = '; '.join(u['aksi'] for u in ups[:3]) or 'Lanjutkan hardening & pentest dinamis.'
+    return report, evaluation
+
+
 def _write_report(run_dir: Path, report, state, patches=None):
     # C: deterministic findings carry verification_status=verified so the
     # report window separates scanner proof from LLM assessment.
@@ -521,12 +580,17 @@ def _write_report(run_dir: Path, report, state, patches=None):
         for row in state['scanner_findings']:
             verified.append(dict(row, verification_status='verified',
                                  independently_verified=True))
-    report = dict(report)
+    report, evaluation = _normalize_report(report, state)
     report['findings'] = list(report.get('findings') or []) + verified
+    try:
+        from src.adaptix.code_audit.evaluation import summary_text as _summary_text
+        evaluation_md = _summary_text(evaluation)
+    except Exception:
+        evaluation_md = evaluation.get('verdict', '')
     markdown = REPORT_MARKDOWN.format(
         title=report['title'], executive_summary=report['executive_summary'],
         methodology=report['methodology'], limitations=report['limitations'],
-        next_steps=report['next_steps'],
+        next_steps=report['next_steps'], evaluation=evaluation_md,
         findings='\n\n'.join(_finding_markdown(row) for row in report['findings'])
                  or '_Tidak ada temuan yang dapat dibuktikan dari source ini._')
     patch_text = _patch_markdown(patches)
@@ -547,6 +611,7 @@ def _write_report(run_dir: Path, report, state, patches=None):
         'findings': report['findings'],
         'verified_findings': verified,
         'external_findings': report['findings'],
+        'evaluation': evaluation,
         'limitations': report['limitations'],
         'next_steps': report['next_steps'],
         'observations': state.get('observations', []),
@@ -642,6 +707,7 @@ def run_audit(run_dir, instruction, *, model, bundle, time_budget=900,
         'stop_reason': None, 'error': '', 'run_started_at': _pre_state['run_started_at'],
         'waiting_provider': False, 'scanner_findings': scanner_findings,
         'first_turn_batch': _first_turn_batch(bundle),
+        '_bundle': bundle,  # untuk fallback report deterministik
     }
     # Fase 3 early-exit: banyak kandidat high dari scanner => LLM cukup
     # 1 turn report kontekstual, tidak perlu 8 iterasi eksplorasi.
@@ -786,9 +852,21 @@ def run_audit(run_dir, instruction, *, model, bundle, time_budget=900,
             _activity(run_dir, 'model', '', 'invalid',
                       f'schema ditolak: {type(exc).__name__}: {detail[:300]}')
             if invalid_responses >= INVALID_RESPONSE_LIMIT:
+                # Fallback deterministik: walau LLM tak pernah berhasil format
+                # JSON, laporan evaluasi tetap ditulis (bukan nol output).
                 state.update(status='completed_with_errors', stop_reason='model_schema_failed',
                              error=('Model tidak menghasilkan keputusan JSON yang valid. '
                                     f'Error terakhir: {detail}')[:1200])
+                _log('[report] fallback: model gagal schema — menulis laporan evaluasi deterministik')
+                try:
+                    fallback_report, fallback_eval = _normalize_report({}, state)
+                    rec = _write_report(run_dir, fallback_report, state, patches=None)
+                    state.update(report=rec, status='completed_with_errors',
+                                 stop_reason='model_schema_failed', node='done')
+                    _log(f'[report] fallback selesai {fallback_eval.get("score")}/100 '
+                         f'grade {fallback_eval.get("grade")}')
+                except Exception as _ex:
+                    _log(f'[report] fallback gagal: {_ex}')
                 break
             continue
         invalid_responses = 0
@@ -858,5 +936,16 @@ def run_audit(run_dir, instruction, *, model, bundle, time_budget=900,
     if state['status'] == 'running':
         state.update(status='completed_with_errors', stop_reason='unknown',
                      error='Audit berhenti tanpa laporan.')
+    # Setiap akhir run: tulis laporan evaluasi sekali lagi agar
+    # code-report.md selalu ada (walau LLM gagal total).
+    if not state.get('report'):
+        try:
+            fallback_report, fallback_eval = _normalize_report({}, state)
+            rec = _write_report(run_dir, fallback_report, state, patches=None)
+            state.update(report=rec, node='done', error=state.get('error') or 'fallback report')
+            _log(f'[report] ditulis (fallback) skor {fallback_eval.get("score")}/100 '
+                 f'grade {fallback_eval.get("grade")}')
+        except Exception as _ex:
+            _log(f'[report] fallback akhir gagal: {_ex}')
     _progress(run_dir, state)
     return state
