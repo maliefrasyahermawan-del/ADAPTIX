@@ -1037,17 +1037,22 @@ def create_app() -> Flask:
 
     @app.get('/api/audit/models')
     def audit_model_list():
-        """LiteLLM model choices for the static code audit."""
+        """LiteLLM model choices for the static code audit.
+
+        Every provider catalog is listed (not only those with a key saved) so
+        the operator can pick the model first and paste the key in Settings.
+        Ids are UI ids; the worker maps them to LiteLLM ids (OpenRouter
+        ``openrouter/<id>`` -> ``openai/<id>`` against the OpenRouter base).
+        """
         configured = (os.getenv('ADAPTIX_LLM_MODEL') or '').strip()
-        rows = [row for row in provider_keys.status_rows() if row['key_set']]
         provider_models = []
-        for row in rows:
+        for row in provider_keys.status_rows():
             provider_models.append(row['model'])
             provider_models.extend(m for m in row['models'] if m != row['model'])
         models = [m for m in (configured, *provider_models, 'deepseek/deepseek-chat',
                               'deepseek/deepseek-reasoner', 'ollama_chat/qwen3:14b') if m]
         models = list(dict.fromkeys(models))
-        default = _preferred_model() or (rows[0]['model'] if rows else models[0])
+        default = _preferred_model() or (models[0] if models else 'deepseek/deepseek-chat')
         return jsonify({'models': models, 'default': default})
 
     FILE_LIMIT_KB = (200, 500, 1024, 2048)

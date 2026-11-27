@@ -103,7 +103,9 @@ PROVIDERS = {
     },
 }
 
-_TOKEN = re.compile(r'^[A-Za-z0-9._\-]{8,400}$')
+# OpenRouter keys always start with sk-or-v1- and contain '-' (not just dots);
+# plain providers like Gemini (AIza...) use dots/dashes too. The regex covers both.
+_TOKEN = re.compile(r'^(?:sk-or-v1-[A-Za-z0-9._\-]{8,}|[A-Za-z0-9._\-]{8,400})$')
 _MODEL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:/@+\-]{1,160}$')
 # OpenRouter's model listing is public, so it can be fetched before a key exists.
 _PUBLIC_MODELS = {'openrouter': 'https://openrouter.ai/api/v1/models'}
@@ -279,14 +281,51 @@ def apply_saved_to_env() -> list[str]:
     return applied
 
 
+# Native family per provider; LiteLLM never sees a virtual 'openrouter/' prefix.
+_NATIVE_PREFIX = {
+    'gemini': 'gemini/',
+    'groq': 'groq/',
+    'deepseek': 'deepseek/',
+    'xai': 'xai/',
+}
+
+
+def litellm_model_for(model: str) -> str:
+    """Map a UI model id to the id LiteLLM actually understands.
+
+    OpenRouter is a routing layer, not a provider: LiteLLM knows it as
+    ``openai/<model>`` against ``https://openrouter.ai/api/v1``. Every other
+    provider maps 1:1 (``gemini/`` -> ``gemini/`` etc.). Ollama family passes
+    through untouched.
+    """
+    name = str(model or '').strip()
+    if not name:
+        return name
+    if name.startswith('openrouter/'):
+        rest = name[len('openrouter/'):]
+        return 'openai/' + rest
+    return name
+
+
+def litellm_prefix_for(model: str) -> str:
+    """Provider id whose key should authenticate ``model`` (litellm id)."""
+    mapped = litellm_model_for(model)
+    return mapped.split('/', 1)[0] if '/' in mapped else ''
+
+
 def credentials_for(model, api_base=None, api_key=None):
     """Resolve (api_key, api_base) for a LiteLLM model string.
 
-    An explicit argument wins. For a known ``<prefix>/`` model the provider key
+    An explicit argument wins. For a known provider the provider key
     (saved token, then its env var) is used instead of ``ADAPTIX_API_KEY`` so a
-    Gemini run never carries the DeepSeek key from ``.env``.
+    Gemini run never carries the DeepSeek key from ``.env``. OpenRouter models
+    use the OpenRouter key against the OpenRouter API base.
     """
-    name = str(model or '')
+    name = str(model or '').strip()
+    if name.startswith('openrouter/'):
+        base = api_base or os.getenv('OPENROUTER_API_BASE') or 'https://openrouter.ai/api/v1'
+        key = api_key or get_token('openrouter') or os.getenv('ADAPTIX_API_KEY') or None
+        return key, base
     prefix = name.split('/', 1)[0] if '/' in name else ''
     spec = PROVIDERS.get(prefix)
     if not spec:
@@ -294,8 +333,6 @@ def credentials_for(model, api_base=None, api_key=None):
                 api_base or os.getenv('ADAPTIX_API_BASE') or None)
     key = api_key or get_token(prefix) or os.getenv('ADAPTIX_API_KEY') or None
     base = api_base
-    if not base and prefix == 'openrouter':
-        base = os.getenv('OPENROUTER_API_BASE') or None
     return key, base or None
 
 
@@ -321,8 +358,8 @@ def live_models(provider: str) -> dict:
     """Ask the provider for its current model list, falling back to the catalog.
 
     Gemini, Groq, DeepSeek and xAI need a key; OpenRouter's listing is public.
-    The returned ids already carry the LiteLLM prefix (``gemini/``, ``xai/``,
-    ``openrouter/``) so the caller can store one directly.
+    The returned ids are UI ids (``gemini/``, ``xai/``, ``openrouter/``) so the
+    caller can store one directly; the audit endpoint maps them to LiteLLM ids.
     """
     import httpx
 
@@ -332,6 +369,8 @@ def live_models(provider: str) -> dict:
     if not token and key not in _PUBLIC_MODELS:
         return {'models': list(spec['models']), 'source': 'catalog',
                 'detail': 'simpan token dulu untuk memuat daftar model'}
+    if key == 'openrouter':
+        return _openrouter_models(token)
     headers = {'Authorization': f'Bearer {token}'} if token else {}
     if key == 'gemini' and token:
         headers = {'x-goog-api-key': token}
@@ -370,6 +409,41 @@ def live_models(provider: str) -> dict:
     return {'models': models, 'source': 'live', 'detail': f'{len(models)} model dari provider'}
 
 
+def _openrouter_models(token: str) -> dict:
+    """Full OpenRouter catalog (public) mapped to UI ``openrouter/`` ids.
+
+    The endpoint returns raw ids like ``deepseek/deepseek-chat`` — they already
+    look like LiteLLM ``openai/...`` targets after mapping, but the UI stores
+    ``openrouter/<id>`` so the provider stays explicit in settings and reports.
+    Falls back to the curated catalog on any network/parse failure.
+    """
+    import httpx
+
+    spec = PROVIDERS['openrouter']
+    headers = {'Authorization': f'Bearer {token}'} if token else {}
+    try:
+        response = httpx.get(_PUBLIC_MODELS['openrouter'], headers=headers, timeout=15.0)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return {'models': list(spec['models']), 'source': 'catalog',
+                'detail': f'gagal memuat model ({type(exc).__name__}); memakai daftar bawaan'}
+    rows = payload.get('data') if isinstance(payload, dict) else payload
+    ids = []
+    for item in rows or []:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get('id') or '').strip()
+        if model_id:
+            ids.append('openrouter/' + model_id)
+    models = sorted(set(ids))
+    if not models:
+        return {'models': list(spec['models']), 'source': 'catalog',
+                'detail': 'provider tidak mengembalikan model; memakai daftar bawaan'}
+    return {'models': models, 'source': 'live',
+            'detail': f'{len(models)} model dari OpenRouter'}
+
+
 def test_token(provider: str) -> dict:
     """Check a saved/env token against the provider's own model listing."""
     import httpx
@@ -379,6 +453,8 @@ def test_token(provider: str) -> dict:
     token = get_token(key)
     if not token:
         return {'ok': False, 'detail': 'token belum diset'}
+    if key == 'openrouter':
+        return _openrouter_test_token(token)
     headers = {'Authorization': f'Bearer {token}'}
     if key == 'gemini':
         headers = {'x-goog-api-key': token}
@@ -389,6 +465,38 @@ def test_token(provider: str) -> dict:
     ok = response.status_code == 200
     detail = f'HTTP {response.status_code}'
     if not ok:
+        try:
+            body = response.json()
+            message = (body.get('error') or {}).get('message') if isinstance(body, dict) else ''
+            if message:
+                detail += ': ' + str(message)[:160]
+        except ValueError:
+            pass
+    return {'ok': ok, 'detail': detail}
+
+
+def _openrouter_test_token(token: str) -> dict:
+    """Verify an OpenRouter key via ``/api/v1/key`` (usage+limit, costs nothing)."""
+    import httpx
+
+    headers = {'Authorization': f'Bearer {token}'}
+    try:
+        response = httpx.get(PROVIDERS['openrouter']['test'], headers=headers, timeout=10.0)
+    except Exception as exc:
+        return {'ok': False,
+                'detail': f'{type(exc).__name__}: token tidak dapat diverifikasi'[:200]}
+    ok = response.status_code == 200
+    detail = f'HTTP {response.status_code}'
+    if ok:
+        try:
+            body = response.json()
+            data = body.get('data') if isinstance(body, dict) else None
+            if isinstance(data, dict) and data.get('is_active') is False:
+                ok = False
+                detail = 'HTTP 200: token dinonaktifkan'
+        except ValueError:
+            pass
+    else:
         try:
             body = response.json()
             message = (body.get('error') or {}).get('message') if isinstance(body, dict) else ''

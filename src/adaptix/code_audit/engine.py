@@ -132,17 +132,35 @@ def _estimate_tokens(messages, output_tokens):
 
 
 def _provider_call(messages, *, model, api_base, api_key, max_tokens, timeout, call=None):
+    """One LiteLLM completion. UI ids are mapped to LiteLLM ids here.
+
+    OpenRouter is a routing layer: the UI keeps ``openrouter/<id>`` (so the
+    provider stays explicit in settings/reports) and LiteLLM receives
+    ``openai/<id>`` against the OpenRouter API base with the OpenRouter key.
+    Credentials are resolved from the saved-token store when the caller did
+    not pass explicit api_key/api_base (worker path does; tests don't).
+    """
+    litellm_model = model
+    try:
+        from src.adaptix import provider_keys
+        litellm_model = provider_keys.litellm_model_for(model)
+        if not api_key or not api_base:
+            _key, _base = provider_keys.credentials_for(model, api_base, api_key)
+            api_key = api_key or _key
+            api_base = api_base or _base
+    except Exception:
+        pass
     if call is not None:
-        return call(model=model, messages=messages, max_tokens=max_tokens,
+        return call(model=litellm_model, messages=messages, max_tokens=max_tokens,
                     temperature=0.2, timeout=timeout)
     import litellm
-    kwargs = dict(model=model, messages=messages, max_tokens=max_tokens,
+    kwargs = dict(model=litellm_model, messages=messages, max_tokens=max_tokens,
                   temperature=0.2, timeout=timeout, num_retries=0)
     if api_base:
         kwargs['api_base'] = api_base
     if api_key:
         kwargs['api_key'] = api_key
-    if model.startswith(('ollama/', 'ollama_chat/')):
+    if litellm_model.startswith(('ollama/', 'ollama_chat/')):
         kwargs['api_base'] = api_base or os.getenv('ADAPTIX_OLLAMA_BASE_URL',
                                                    'http://127.0.0.1:11434')
         kwargs['num_ctx'] = int(os.getenv('ADAPTIX_MODEL_CONTEXT_TOKENS') or 8192)

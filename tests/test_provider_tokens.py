@@ -92,6 +92,95 @@ def test_web_token_endpoints_never_return_value(store):
                for t in deleted.get_json()['tokens'])
 
 
+# OpenRouter keys are sk-or-v1- + base64-ish; the regex must accept them.
+OR_KEY = 'sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789abcdef'
+
+
+def test_openrouter_key_saved_and_belongs_to_audit(store, monkeypatch):
+    result = provider_keys.set_token(
+        'openrouter', OR_KEY, 'openrouter/anthropic/claude-3.5-sonnet')
+    assert result['key_set'] is True
+    assert OR_KEY not in json.dumps(result)
+    assert os.environ['OPENROUTER_API_KEY'] == OR_KEY
+    row = next(r for r in provider_keys.status_rows() if r['id'] == 'openrouter')
+    assert row['source'] == 'saved'
+    assert row['model'] == 'openrouter/anthropic/claude-3.5-sonnet'
+
+
+def test_litellm_mapping_for_openrouter(store):
+    assert (provider_keys.litellm_model_for('openrouter/deepseek/deepseek-chat')
+            == 'openai/deepseek/deepseek-chat')
+    assert (provider_keys.litellm_model_for('openrouter/google/gemini-2.5-flash')
+            == 'openai/google/gemini-2.5-flash')
+    assert provider_keys.litellm_model_for('gemini/gemini-2.5-flash') == 'gemini/gemini-2.5-flash'
+    assert provider_keys.litellm_model_for('ollama_chat/qwen3:14b') == 'ollama_chat/qwen3:14b'
+    # after mapping the litellm id carries the openai family; the UI id keeps openrouter/
+    assert provider_keys.litellm_prefix_for('openrouter/openai/gpt-4o-mini') == 'openai'
+
+
+def test_openrouter_credentials_use_or_base_and_key(store, monkeypatch):
+    provider_keys.set_token('openrouter', OR_KEY, 'openrouter/deepseek/deepseek-chat')
+    key, base = provider_keys.credentials_for('openrouter/deepseek/deepseek-chat')
+    assert key == OR_KEY
+    assert base == 'https://openrouter.ai/api/v1'
+
+
+def test_audit_models_include_openrouter_without_key_saved(store):
+    # The catalog must be selectable before any key exists; the endpoint
+    # previously only listed providers whose key was already saved.
+    client = webapp.create_app().test_client()
+    data = client.get('/api/audit/models').get_json()
+    assert 'openrouter/deepseek/deepseek-chat' in data['models']
+    assert 'openrouter/anthropic/claude-3.5-sonnet' in data['models']
+    assert 'openrouter/google/gemini-2.5-flash' in data['models']
+
+
+def test_openrouter_models_endpoint_uses_public_catalog(store, monkeypatch):
+    """live_models(openrouter) must return provider ids even with no key (public listing)."""
+    import httpx as _httpx
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {'data': [
+                {'id': 'deepseek/deepseek-chat'},
+                {'id': 'anthropic/claude-3.5-sonnet'},
+                {'bad-key': 'x'},
+            ]}
+
+    def _fake_get(url, headers=None, timeout=15.0):
+        assert url == 'https://openrouter.ai/api/v1/models'
+        return _Resp()
+
+    monkeypatch.setattr(_httpx, 'get', _fake_get)
+    data = provider_keys.live_models('openrouter')
+    assert data['source'] == 'live'
+    assert 'openrouter/deepseek/deepseek-chat' in data['models']
+    assert 'openrouter/anthropic/claude-3.5-sonnet' in data['models']
+
+
+def test_code_audit_engine_maps_openrouter_id(store, monkeypatch):
+    from src.adaptix.code_audit import engine as audit_engine
+
+    seen = {}
+
+    def fake_call(model=None, messages=None, max_tokens=None, temperature=None, timeout=None):
+        seen['model'] = model
+        return {'choices': [{'message': {'content': '["list_source"]'}}], 'usage': {'prompt_tokens': 1, 'completion_tokens': 1, 'total_tokens': 2}}
+
+    provider_keys.set_token('openrouter', OR_KEY, 'openrouter/deepseek/deepseek-chat')
+    audit_engine._provider_call(
+        [{'role': 'user', 'content': 'hi'}],
+        model='openrouter/deepseek/deepseek-chat', api_base=None, api_key=None,
+        max_tokens=64, timeout=5, call=fake_call)
+    assert seen['model'] == 'openai/deepseek/deepseek-chat'
+    # credentials resolve to the OpenRouter key without the caller passing them
+    key, base = provider_keys.credentials_for('openrouter/deepseek/deepseek-chat')
+    assert key == OR_KEY
+
+
 def test_model_choice_saved_and_preferred(store):
     provider_keys.set_token('deepseek', 'sk-deepseek-key-1234567890', 'deepseek/deepseek-v4-pro')
     row = next(r for r in provider_keys.status_rows() if r['id'] == 'deepseek')

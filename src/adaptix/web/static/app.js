@@ -537,7 +537,10 @@ function renderTokens() {
       <div class="set-card-head">
         <div>
           <div class="set-card-title">API tokens</div>
-          <div class="set-card-sub">API key + model default per provider untuk engine ADAPTIX. Disimpan lokal di mesin ini; key hanya ditampilkan tersamar.</div>
+          <div class="set-card-sub">API key + model default per provider untuk engine ADAPTIX — termasuk Code Audit.
+          OpenRouter: tempel key, klik <b>Muat daftar model</b>, pilih model mana pun (mis. <code>openrouter/anthropic/claude-3.5-sonnet</code>),
+          lalu model itu muncul di dropdown Code Audit tanpa restart.
+          Disimpan lokal di mesin ini; key hanya ditampilkan tersamar.</div>
         </div>
         <button class="set-btn" data-token-new>+ New Token</button>
       </div>
